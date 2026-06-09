@@ -1,0 +1,32 @@
+# Binaries
+/rcss
+/rcss-tui
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go test / coverage / build artifacts
+*.test
+*.out
+coverage.*
+go.work
+go.work.sum
+
+# Vendored deps (using modules)
+vendor/
+
+# Runtime log (generated locally, not part of the repo)
+sync.log
+
+# Local config / reference (real config lives in ~/.config/rcss/)
+backup.env
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
