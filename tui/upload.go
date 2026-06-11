@@ -115,7 +115,7 @@ func (u uploadModel) View() string {
 		var b strings.Builder
 		b.WriteString(titleStyle.Render("Upload"))
 		b.WriteString("\n\n")
-		b.WriteString(subtitleStyle.Render("Root:   " + u.cfg.BackupRoot))
+		b.WriteString(subtitleStyle.Render("Root:   " + u.cfg.SyncRoot))
 		b.WriteString("\n")
 		b.WriteString(subtitleStyle.Render(fmt.Sprintf("Remote: %s/%s", u.cfg.RemoteName, u.cfg.DriveDestination)))
 		b.WriteString("\n\n")

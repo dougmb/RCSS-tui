@@ -22,14 +22,14 @@ func (i menuItem) FilterValue() string { return i.title }
 // detail pane preview instead.
 func newMenu() list.Model {
 	items := []list.Item{
-		menuItem{"Account", "Choose the rclone remote, or configure a new one with `rclone config`.", screenAccount},
-		menuItem{"Backup folder", "Pick the local folder whose sub-folders and files are backed up.", screenFolder},
-		menuItem{"Backups", "Browse remote folders and files and restore one.", screenBackups},
-		menuItem{"Upload", "Run a backup now, streaming rclone progress.", screenUpload},
-		menuItem{"Clean", "Preview (dry-run) then delete old remote backups.", screenClean},
-		menuItem{"Settings", "Edit retention and behavior, saved to config.toml.", screenSettings},
-		menuItem{"Schedule", "Install daily-upload / weekly-clean jobs into your crontab.", screenSchedule},
-		menuItem{"Logs", "Scroll the sync log with ERROR/WARN highlighting.", screenLogs},
+		menuItem{"Account", "Select or configure an rclone remote (e.g. Google Drive).", screenAccount},
+		menuItem{"Sync folder", "Choose the local directory whose sub-folders are synced to the cloud.", screenFolder},
+		menuItem{"Backups", "Browse cloud backups by project and restore individual files.", screenBackups},
+		menuItem{"Upload", "Sync all projects to the cloud now, with live progress.", screenUpload},
+		menuItem{"Clean", "Remove old cloud backups beyond retention, with dry-run preview.", screenClean},
+		menuItem{"Settings", "Configure retention days, dotfiles, ignored folders and behavior.", screenSettings},
+		menuItem{"Schedule", "Set up automatic upload and clean schedules via crontab.", screenSchedule},
+		menuItem{"Logs", "View the sync log with colorized ERROR and WARN entries.", screenLogs},
 	}
 
 	d := list.NewDefaultDelegate()

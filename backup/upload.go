@@ -29,7 +29,7 @@ type UploadResult struct {
 }
 
 // Upload ports uploadBackup.sh: it iterates the sub-directories of
-// cfg.BackupRoot, skips dotfolders and ignored folders, and uploads each
+// cfg.SyncRoot, skips dotfolders and ignored folders, and uploads each
 // "project" to <remote>/<dest>/<project> via rclone copy. Local cleanup runs
 // ONLY inside the success branch of each upload (the core safety invariant):
 // when DeleteAfterUpload is set every top-level file is removed, otherwise
@@ -42,8 +42,8 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 		log.Errorf("%v", err)
 		return res, err
 	}
-	if fi, err := os.Stat(cfg.BackupRoot); err != nil || !fi.IsDir() {
-		err := fmt.Errorf("backup root directory not found: %s", cfg.BackupRoot)
+	if fi, err := os.Stat(cfg.SyncRoot); err != nil || !fi.IsDir() {
+		err := fmt.Errorf("sync root directory not found: %s", cfg.SyncRoot)
 		log.Errorf("%v", err)
 		return res, err
 	}
@@ -51,9 +51,9 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 	overallStart := time.Now()
 	log.Infof("Starting backup synchronization...")
 	log.Infof("Settings: root=%s | remote=%s | retention=%dd | skip_dotfiles=%t | delete_after_upload=%t",
-		cfg.BackupRoot, cfg.RemoteName, cfg.RetentionDays, cfg.SkipDotfiles, cfg.DeleteAfterUpload)
+		cfg.SyncRoot, cfg.RemoteName, cfg.RetentionDays, cfg.SkipDotfiles, cfg.DeleteAfterUpload)
 
-	entries, err := os.ReadDir(cfg.BackupRoot)
+	entries, err := os.ReadDir(cfg.SyncRoot)
 	if err != nil {
 		log.Errorf("reading backup root: %v", err)
 		return res, err
@@ -78,7 +78,7 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 		}
 		projects++
 
-		projectPath := filepath.Join(cfg.BackupRoot, name)
+		projectPath := filepath.Join(cfg.SyncRoot, name)
 		log.Infof("→ Processing project: %s", name)
 		stepStart := time.Now()
 
@@ -123,7 +123,7 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 	}
 
 	if projects == 0 && looseFiles == 0 {
-		log.Warnf("Nothing to back up: %s has no project sub-folders or files.", cfg.BackupRoot)
+		log.Warnf("Nothing to back up: %s has no project sub-folders or files.", cfg.SyncRoot)
 	}
 
 	res.Duration = time.Since(overallStart)
@@ -141,13 +141,13 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 	return res, nil
 }
 
-// uploadLooseFiles uploads the regular files sitting directly in BackupRoot
+// uploadLooseFiles uploads the regular files sitting directly in SyncRoot
 // (not inside any project sub-folder) to the destination root, then runs local
 // cleanup on them — the same success-only invariant as projects. It uses
 // --max-depth 1 so rclone copies only top-level files and never descends into
 // the project sub-folders (those are handled separately).
 func uploadLooseFiles(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logger, opts UploadOptions, res *UploadResult) {
-	log.Infof("→ Uploading loose files in %s", cfg.BackupRoot)
+	log.Infof("→ Uploading loose files in %s", cfg.SyncRoot)
 	stepStart := time.Now()
 
 	copyOpts := rclone.CopyOptions{
@@ -165,14 +165,14 @@ func uploadLooseFiles(ctx context.Context, cfg config.Config, rc *rclone.Client,
 	}
 
 	dst := remoteDest(cfg)
-	if err := rc.Copy(ctx, cfg.BackupRoot, dst, copyOpts, log.Raw); err != nil {
+	if err := rc.Copy(ctx, cfg.SyncRoot, dst, copyOpts, log.Raw); err != nil {
 		log.Warnf("   ⚠ Loose file upload failed. Local cleanup SKIPPED.")
 		res.UploadErrors++
 		return
 	}
 
 	log.Infof("   ✓ Synchronized successfully.")
-	deleted, delErrs := cleanupLocal(cfg.BackupRoot, cfg, log)
+	deleted, delErrs := cleanupLocal(cfg.SyncRoot, cfg, log)
 	if deleted > 0 {
 		log.Infof("   - Removed %d local files.", deleted)
 	}

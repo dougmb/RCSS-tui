@@ -59,6 +59,7 @@ type Model struct {
 
 	focus  focusArea
 	screen screen
+	locked bool
 
 	menu     list.Model
 	account  accountModel
@@ -92,11 +93,11 @@ func New(cfg config.Config, rc *rclone.Client) Model {
 	}
 }
 
-// folderStart is the directory the picker opens at: the configured BackupRoot
+// folderStart is the directory the picker opens at: the configured SyncRoot
 // when set, otherwise the user's home directory.
 func (m Model) folderStart() string {
-	if m.cfg.BackupRoot != "" {
-		return m.cfg.BackupRoot
+	if m.cfg.SyncRoot != "" {
+		return m.cfg.SyncRoot
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return home
@@ -165,13 +166,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case folderChosenMsg:
-		m.cfg.BackupRoot = msg.path
+		m.cfg.SyncRoot = msg.path
 		m.saveErr = config.Save(m.cfg)
 		m.focus = focusSidebar
 		return m, nil
 
 	case goBackMsg:
 		m.focus = focusSidebar
+		m.locked = false
 		return m, nil
 
 	case tea.KeyMsg:
@@ -217,7 +219,21 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 	}
 	m.screen = it.target
 	m.focus = focusDetail
+	if requiresRemote(it.target) && m.cfg.RemoteName == "" {
+		m.locked = true
+		return m, nil
+	}
+	m.locked = false
 	return m.enterScreen(it.target)
+}
+
+// requiresRemote reports whether a screen needs a configured rclone remote.
+func requiresRemote(s screen) bool {
+	switch s {
+	case screenFolder, screenBackups, screenUpload, screenClean, screenSchedule:
+		return true
+	}
+	return false
 }
 
 // enterScreen (re)initializes the chosen screen and returns its load/init
@@ -319,6 +335,9 @@ func (m Model) detailView() string {
 	if m.focus == focusSidebar {
 		return m.previewView()
 	}
+	if m.locked {
+		return m.viewLocked()
+	}
 	switch m.screen {
 	case screenAccount:
 		return m.account.View()
@@ -340,6 +359,19 @@ func (m Model) detailView() string {
 	return ""
 }
 
+// viewLocked shows a warning when a screen requires a remote but none is configured.
+func (m Model) viewLocked() string {
+	it, ok := m.menu.SelectedItem().(menuItem)
+	if !ok {
+		return ""
+	}
+	body := titleStyle.Render(it.title) + "\n\n"
+	body += warnStyle.Render("No rclone account configured.")
+	body += "\n\n"
+	body += subtitleStyle.Render("Please configure an account first (Account → select or add a remote).")
+	return body
+}
+
 // previewView shows the highlighted menu item's description plus relevant
 // current config, with a hint to open it.
 func (m Model) previewView() string {
@@ -353,7 +385,7 @@ func (m Model) previewView() string {
 	case screenAccount:
 		body += "\n\n" + infoLine("Current remote", m.cfg.RemoteName)
 	case screenFolder:
-		body += "\n\n" + infoLine("Backup folder", m.cfg.BackupRoot)
+		body += "\n\n" + infoLine("Sync folder", m.cfg.SyncRoot)
 	case screenUpload, screenClean, screenBackups:
 		body += "\n\n" + infoLine("Remote", m.cfg.RemoteName) +
 			"\n" + infoLine("Destination", m.cfg.DriveDestination)
@@ -384,6 +416,9 @@ func (m Model) footerText() string {
 
 // detailFooter returns the key hints for the active detail screen.
 func (m Model) detailFooter() string {
+	if m.locked {
+		return "esc back"
+	}
 	switch m.screen {
 	case screenAccount:
 		return "↑/↓ move • enter select • r refresh • / filter • esc back"

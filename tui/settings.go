@@ -21,7 +21,7 @@ type settingsSavedMsg struct{ cfg config.Config }
 type settingsModel struct {
 	form *huh.Form
 
-	remoteName, backupRoot, driveDest      string
+	remoteName, syncRoot, driveDest        string
 	retention, remoteRetention, safetyDays string
 	deleteAfter, skipDotfiles              bool
 	ignored, logFile                       string
@@ -39,7 +39,7 @@ func numeric(s string) error {
 func newSettingsModel(cfg config.Config) settingsModel {
 	s := settingsModel{
 		remoteName:      cfg.RemoteName,
-		backupRoot:      cfg.BackupRoot,
+		syncRoot:        cfg.SyncRoot,
 		driveDest:       cfg.DriveDestination,
 		retention:       strconv.Itoa(cfg.RetentionDays),
 		remoteRetention: strconv.Itoa(cfg.RemoteRetentionDays),
@@ -54,8 +54,8 @@ func newSettingsModel(cfg config.Config) settingsModel {
 		huh.NewGroup(
 			huh.NewInput().Key("remote").Title("Remote name").
 				Description("rclone remote, e.g. drive:").Value(&s.remoteName),
-			huh.NewInput().Key("root").Title("Backup root").
-				Description("Local folder holding the projects").Value(&s.backupRoot),
+			huh.NewInput().Key("root").Title("Sync root").
+				Description("Local folder holding the projects").Value(&s.syncRoot),
 			huh.NewInput().Key("dest").Title("Drive destination").Value(&s.driveDest),
 		),
 		huh.NewGroup(
@@ -91,7 +91,7 @@ func (s settingsModel) toConfig() config.Config {
 	atoi := func(v string) int { n, _ := strconv.Atoi(strings.TrimSpace(v)); return n }
 	return config.Config{
 		RemoteName:              strings.TrimSpace(s.remoteName),
-		BackupRoot:              strings.TrimSpace(s.backupRoot),
+		SyncRoot:                strings.TrimSpace(s.syncRoot),
 		DriveDestination:        strings.TrimSpace(s.driveDest),
 		RetentionDays:           atoi(s.retention),
 		RemoteRetentionDays:     atoi(s.remoteRetention),

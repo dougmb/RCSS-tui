@@ -26,8 +26,8 @@ type Config struct {
 	// RemoteName is the rclone remote as configured via `rclone config`,
 	// including the trailing colon (e.g. "drive:" or "douglas:").
 	RemoteName string `toml:"remote_name"`
-	// BackupRoot is the local directory whose sub-folders are the projects.
-	BackupRoot string `toml:"backup_root"`
+	// SyncRoot is the local directory whose sub-folders are the projects.
+	SyncRoot string `toml:"sync_root"`
 	// DriveDestination is the destination folder on the remote; backups live
 	// at <RemoteName>/<DriveDestination>/<project>/.
 	DriveDestination string `toml:"drive_destination"`
@@ -49,7 +49,7 @@ type Config struct {
 	// SkipDotfiles excludes hidden files/folders (starting with ".") from
 	// uploads, protecting files like .env, .git/, .ssh/.
 	SkipDotfiles bool `toml:"skip_dotfiles"`
-	// IgnoredFolders are sub-folders of BackupRoot never treated as projects.
+	// IgnoredFolders are sub-folders of SyncRoot never treated as projects.
 	IgnoredFolders []string `toml:"ignored_folders"`
 
 	// LogFile is the path to the append-only sync log. Empty means a default
@@ -63,7 +63,7 @@ type Config struct {
 func Default() Config {
 	return Config{
 		RemoteName:              "",
-		BackupRoot:              "",
+		SyncRoot:                "",
 		DriveDestination:        "Backups",
 		RetentionDays:           1,
 		RemoteRetentionDays:     15,
@@ -164,8 +164,8 @@ func (c Config) Validate() error {
 	if c.RemoteName == "" {
 		missing = append(missing, "remote_name")
 	}
-	if c.BackupRoot == "" {
-		missing = append(missing, "backup_root")
+	if c.SyncRoot == "" {
+		missing = append(missing, "sync_root")
 	}
 	if c.DriveDestination == "" {
 		missing = append(missing, "drive_destination")

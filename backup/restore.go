@@ -78,7 +78,7 @@ type RestoreOptions struct {
 	// DryRun previews the download without writing files.
 	DryRun bool
 	// OutputPath overrides the download destination. When empty, the file is
-	// restored to <BackupRoot>/<project>/.
+	// restored to <SyncRoot>/<project>/.
 	OutputPath string
 }
 
@@ -93,14 +93,14 @@ func Restore(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Log
 
 	localPath := opts.OutputPath
 	if localPath == "" {
-		if cfg.BackupRoot == "" {
-			return fmt.Errorf("config incomplete: backup_root not set")
+		if cfg.SyncRoot == "" {
+			return fmt.Errorf("config incomplete: sync_root not set")
 		}
-		// Root-level files restore into BackupRoot; project files into a
+		// Root-level files restore into SyncRoot; project files into a
 		// matching sub-folder.
-		localPath = cfg.BackupRoot
+		localPath = cfg.SyncRoot
 		if project != "" {
-			localPath = joinRemoteLocal(cfg.BackupRoot, project)
+			localPath = joinRemoteLocal(cfg.SyncRoot, project)
 		}
 	}
 	if err := os.MkdirAll(localPath, 0o755); err != nil {
