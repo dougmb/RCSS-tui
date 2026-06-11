@@ -1,143 +1,132 @@
-# RCSS — Rclone Cloud Simple Scripts
+# RCSS-tui — Rclone Cloud Simple Scripts
 
-Automated backup management for multiple projects: uploads to CLOUD services suported by the **rclone**, and other funcions:
----
+A small, polished **terminal UI** (and headless CLI) for managing per-project
+backups on any cloud remote supported by [`rclone`](https://rclone.org) —
+typically Google Drive. RCSS uploads each project folder, prunes old backups
+locally and in the cloud, restores files, and can schedule itself through your
+crontab.
 
-## Quick Start
+It is a **pure Go** application built on [Bubbletea](https://github.com/charmbracelet/bubbletea):
+a single self-contained binary that drives the `rclone` binary directly. There
+are no Bash scripts and no `backup.env` — all configuration lives in one
+`config.toml`. `rclone` is the only runtime dependency and keeps your cloud
+credentials in its own config; RCSS never handles API secrets.
 
-```bash
-# 1. Install rclone
-sudo apt install rclone
+> RCSS began as three Bash scripts. Those live on as a portability reference in
+> the original repository ([`dougmb/RCSS`](https://github.com/dougmb/RCSS)); this
+> repo is the standalone Go rewrite. See `plan.md` for the port plan and the
+> confirmed design decisions.
 
-# 2. Configure a Google Drive remote
-rclone config   # type: drive → set root_folder_id to your Drive folder ID
+## Stack
 
-# 3. Edit backup.env with your settings (BACKUP_ROOT and RCLONE_REMOTE are required)
+- `charmbracelet/bubbletea` — framework (Elm architecture)
+- `charmbracelet/lipgloss` — styles / theme
+- `charmbracelet/bubbles` — list, filepicker, viewport, progress, spinner
+- `charmbracelet/huh` — forms (Settings, Schedule)
+- `BurntSushi/toml` — config file
+- Runtime: the `rclone` binary on your `PATH`
 
-# 4. Make scripts executable
-chmod +x *.sh
-
-# 5. Run
-./uploadBackup.sh -p
-```
-
----
-
-## Complete Setup with Cron
-
-```bash
-# Edit backup.env
-BACKUP_ROOT="/opt/backups"
-RCLONE_REMOTE="account:"
-DRIVE_DESTINATION="Backups"
-RETENTION_DAYS=1
-REMOTE_RETENTION_DAYS=15
-
-# Make executable
-chmod +x /opt/backup/*.sh
-
-# Schedule (crontab -e)
-# Upload daily at 03:00
-0 3 * * * /opt/backup/uploadBackup.sh >> /opt/backup/sync.log 2>&1
-
-# Clean Drive every Sunday at 05:00
-0 5 * * 0 /opt/backup/cleanRemoteBackups.sh >> /opt/backup/sync.log 2>&1
-```
-
----
-
-## Scripts
-
-| Script | Description |
-|---|---|
-| `uploadBackup.sh` | Uploads all project folders in `BACKUP_ROOT` to the cloud |
-| `cleanRemoteBackups.sh` | Deletes old backups from Google Drive |
-| `restoreBackup.sh` | Interactive download of a backup from the cloud |
-| `backup.env` | Shared configuration file |
-
----
-
-## Configuration (`backup.env`)
-
-**Required**
-
-| Variable | Description |
-|---|---|
-| `BACKUP_ROOT` | Local directory containing project folders (e.g. `/opt/backups`) |
-| `RCLONE_REMOTE` | rclone remote name (e.g. `douglas:`) |
-
-**Retention**
-
-| Variable | Default | Description |
-|---|---|---|
-| `RETENTION_DAYS` | `1` | Days to keep local backups before deletion |
-| `REMOTE_RETENTION_DAYS` | `15` | Days to keep backups on Drive |
-| `DELETE_AFTER_UPLOAD` | `false` | Delete local files immediately after upload (overrides `RETENTION_DAYS`) |
-
-**Cloud**
-
-| Variable | Default | Description |
-|---|---|---|
-| `DRIVE_DESTINATION` | `Backups` | Destination folder on Google Drive |
-| `REMOTE_CLEANUP_SAFETY_DAYS` | `2` | Block remote cleanup if no recent backup is found within this many days |
-
-**Upload Behavior**
-
-| Variable | Default | Description |
-|---|---|---|
-| `IGNORED_FOLDERS` | `scripts config bin logs lost+found` | Folders inside `BACKUP_ROOT` to skip |
-| `SKIP_DOTFILES` | `false` | Exclude hidden files/folders (`.env`, `.git/`, etc.) from upload |
-
----
-
-## `uploadBackup.sh` Flags
-
-| Flag | Description |
-|---|---|
-| `-p` | Show progress bar |
-| `-v` | Verbose output |
-| `-D` | Enable `DELETE_AFTER_UPLOAD` (default: off) |
-| `-s` | Enable `SKIP_DOTFILES` (default: off) |
-| `-o <path>` | Override `BACKUP_ROOT` |
-| `-r <remote>` | Override `RCLONE_REMOTE` |
-| `-d <folder>` | Override `DRIVE_DESTINATION` |
-| `-i <folders>` | Extra folders to ignore (appended to `IGNORED_FOLDERS`) |
-| `-a <file>` | Upload a single file instead of scanning project folders |
-
----
-
-## Usage Examples
+## Install
 
 ```bash
-# Upload with progress bar
-./uploadBackup.sh -p
-
-# Delete local files immediately after upload
-./uploadBackup.sh -D
-
-# Upload a single file to a specific Drive folder
-./uploadBackup.sh -a /opt/RCSS/sync.log -d Logs
-
-# Override source, remote, and destination
-./uploadBackup.sh -o /mnt/other/backups -r otherremote: -d OtherFolder
-
-# Exclude dotfiles from upload
-./uploadBackup.sh -s
-
-# Restore a backup interactively
-./restoreBackup.sh -p -v
-
-# Restore to a custom directory
-./restoreBackup.sh -o /tmp/my-restore
-
-# Simulate cloud cleanup (dry-run)
-./cleanRemoteBackups.sh -d -v
-
-# Check logs
-tail -f sync.log
+# Requires Go and rclone on your PATH
+git clone https://github.com/dougmb/RCSS-tui.git
+cd RCSS-tui
+go build -o rcss .
+./rcss
 ```
 
+Make sure `rclone` is installed and has at least one remote configured:
 
-Built on top of [rclone](https://rclone.org) — the open source cloud storage manager.
+```bash
+rclone config        # set up a Google Drive (or other) remote
+```
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Q5Q61UQM6J)
+## Usage
+
+### Terminal UI
+
+```bash
+rcss
+```
+
+Opens the full UI. From the main menu:
+
+| Screen | What it does |
+| --- | --- |
+| **Account** | Pick the rclone remote, or launch `rclone config` to add a new one |
+| **Backup folder** | Choose the local root folder whose sub-folders are your projects |
+| **Backups** | Browse remote projects → files and restore one, with live progress |
+| **Upload** | Run a backup now, streaming rclone progress |
+| **Clean** | Preview (dry-run) then delete old remote backups |
+| **Settings** | Edit retention and behavior; saved to `config.toml` |
+| **Schedule** | Install daily-upload / weekly-clean jobs into your crontab |
+| **Logs** | Scroll the sync log with ERROR/WARN highlighting |
+
+The UI requires a terminal of at least **80×24**; anything smaller renders a
+single centered notice (`Not enough space to render panels`).
+
+Global keys: `↑/↓` move · `enter` select · `esc` back · `q` / `ctrl+c` quit ·
+`/` filter (in lists).
+
+### Headless (for cron)
+
+The same backup engine runs without the UI — this is exactly what the Schedule
+screen writes into your crontab:
+
+```bash
+rcss upload [-v] [-p]                    # upload all projects
+rcss clean  [-v] [--dry-run] [--force]   # remove old remote backups
+rcss help
+```
+
+## Configuration
+
+Settings live in a single TOML file at `~/.config/rcss/config.toml` (respecting
+`XDG_CONFIG_HOME`), created with recommended defaults on first run and edited
+from the **Settings** screen. It holds paths and the remote name — **no API
+secrets** (those stay in rclone's own config), so it is naturally outside the
+repository.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `remote_name` | — | rclone remote, e.g. `drive:` |
+| `backup_root` | — | local folder whose sub-folders are projects |
+| `drive_destination` | `Backups` | destination folder on the remote |
+| `retention_days` | `1` | delete **local** files older than this after a successful upload |
+| `remote_retention_days` | `15` | delete **cloud** files older than this on clean |
+| `remote_cleanup_safety_days` | `2` | clean is blocked unless a backup newer than this exists |
+| `delete_after_upload` | `false` | delete all local files right after a successful upload |
+| `skip_dotfiles` | `false` | exclude hidden files/folders from uploads |
+| `ignored_folders` | `scripts config bin logs lost+found` | sub-folders never treated as projects |
+| `log_file` | (config dir)/`sync.log` | append-only run log |
+
+## Safety guarantees
+
+- **Local files are deleted only after a successful upload** of that project —
+  a failed upload never removes local data.
+- **Remote cleanup is locked** unless a recent backup (within
+  `remote_cleanup_safety_days`) exists on the remote, so a silently-stopped
+  upload cron cannot let cleanup wipe your history. `--force` bypasses the lock
+  and is intentionally dangerous.
+- In the UI, **Clean always starts with a dry-run**; the real deletion requires
+  an explicit keypress.
+- Scheduling only ever edits a single delimited
+  `# >>> RCSS-managed >>>` … `# <<< RCSS-managed <<<` block in your crontab;
+  every other entry is preserved, and clearing the schedule removes just that
+  block.
+
+## Project layout
+
+```
+main.go      entrypoint: no args → TUI; `upload`/`clean` → headless (cron)
+config/      config.toml model + Load/Save + defaults
+rclone/      thin wrapper over the rclone binary (ListRemotes, Lsf, Copy, Delete)
+backup/      ported Upload / Clean / Restore + logging (safety invariants)
+cron/        read/write the managed crontab block
+tui/         Bubbletea root model + styles + one file per screen
+```
+
+## License
+
+See repository.

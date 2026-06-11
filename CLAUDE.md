@@ -4,41 +4,59 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-RCSS (Rclone Cloud Simple Scripts) is a backup management toolkit. Three Bash scripts wrap `rclone` to upload, clean, and restore per-project backups on a cloud remote (typically Google Drive). The `tui/` directory is a planned Go/Bubbletea terminal UI that will front these scripts — currently scaffolding only (empty `models/` and `runner/` dirs).
+RCSS (Rclone Cloud Simple Scripts) is a Go program — a Bubbletea terminal UI plus a headless CLI — for managing per-project backups on an `rclone` cloud remote (typically Google Drive). It uploads each project folder, prunes old backups locally and remotely, restores files, and schedules itself via the user's crontab.
 
-All shared configuration lives in `backup.env`, sourced by every script. `backup.env` contains real secrets/paths and is **not** committed; `sync.log` is the append-only run log written by upload and clean.
+The backup logic was **ported to Go from three original Bash scripts** (`uploadBackup.sh`, `cleanRemoteBackups.sh`, `restoreBackup.sh`), which remain in the repo root as read-only reference (along with `backup.env`). The Go code — not the scripts — is now the source of truth. `plan.md` documents the port plan and decisions.
 
-## Running
+`rclone` is the only runtime dependency; it stores cloud credentials in its own config. RCSS never handles API secrets.
+
+## Build / run / verify
 
 ```bash
-chmod +x *.sh                 # one-time
-./uploadBackup.sh -p          # upload all projects with progress bar
-./uploadBackup.sh -v -D       # verbose, delete local files after upload
-./uploadBackup.sh -a <file>   # single-file mode (skips project loop)
-./cleanRemoteBackups.sh -d -v # dry-run remote cleanup (preview deletions)
-./cleanRemoteBackups.sh       # actually delete old remote backups
-./restoreBackup.sh -p         # interactive restore (prompts for project + file)
+go build ./...        # build everything
+go vet ./...          # vet — keep clean
+go build -o rcss .    # produce the binary
+
+./rcss                       # open the TUI
+./rcss upload [-v] [-p]      # headless upload (what cron runs)
+./rcss clean [-v] [--dry-run] [--force]
 ```
 
-There is no build, test, or lint setup yet. When linting Bash, use `shellcheck` — the scripts already follow its conventions (`# shellcheck source=/dev/null` directives, quoted expansions, array-based rclone flags).
+There is no test suite yet. Verify changes by building/vetting and by driving the relevant package with a **fake `rclone`** on the PATH (a shell script that echoes canned `lsf`/`copy`/`delete` output) — this is how the backup logic and TUI flows are exercised without a real remote. For TUI work, sub-models can be driven headless by feeding `tea.Msg`s into `Update` and inspecting `View()`.
 
-## Architecture & conventions
+## Architecture
 
-**Config resolution order** (in `uploadBackup.sh`): CLI flag overrides (`-o`, `-r`, `-d`, `-i`) > `backup.env` values > hardcoded defaults. `BACKUP_ROOT`, `RCLONE_REMOTE`, and `RETENTION_DAYS` are required and validated via `: "${VAR:?...}"`; the script aborts if any is unset. Other scripts validate their own required subset.
+```
+main.go      entrypoint: no args → TUI; `upload`/`clean` → headless (cron). Shared backup engine either way.
+config/      Config struct + Load/Save of ~/.config/rcss/config.toml (XDG-aware) + recommended defaults.
+rclone/      thin wrapper over the rclone binary: ListRemotes, Lsf, Copy, Delete, EnsureInstalled (PATH check).
+backup/      ported business logic: Upload, Clean, Restore (+ ListProjects/ListFiles) and the Logger.
+cron/        read/write a single delimited block in the user's crontab.
+tui/         Bubbletea root model (app.go) + styles.go + one file per screen.
+```
 
-**Remote layout**: backups live at `${RCLONE_REMOTE}/${DRIVE_DESTINATION}/<PROJECT_NAME>/`. Upload iterates each subdirectory of `BACKUP_ROOT` as a "project", skipping dotfolders and anything in `IGNORED_FOLDERS` (default: `scripts config bin logs lost+found`). Restore mirrors this: it lists projects via `rclone lsf --dirs-only`, then files within the chosen project.
+**Config** is a single `~/.config/rcss/config.toml` (no more `backup.env`, no `source`-ing shell). `config.Load()` creates it with defaults on first run; the Settings screen and Account/Folder screens persist changes via `config.Save()`. Required fields are checked by `Config.Validate()`. Two distinct retention concepts — keep them separate: `RetentionDays` (local cleanup after upload) vs `RemoteRetentionDays` (cloud cleanup).
 
-**Two retention concepts — keep them distinct**: `RETENTION_DAYS` controls deletion of *local* files after upload (`find -mtime`); `REMOTE_RETENTION_DAYS` controls deletion of *cloud* files (`rclone delete --min-age`). The `-D`/`DELETE_AFTER_UPLOAD` flag bypasses `RETENTION_DAYS` and deletes all local files immediately after a successful upload.
+**rclone wrapper**: list-style commands use `output()` (capture stdout, stderr → error). Long operations use `stream()` — one `os.Pipe` receives stdout+stderr and a custom `bufio.SplitFunc` (`scanLinesOrCR`) splits on `\n` **and** `\r`, so `-P` progress updates surface live. All calls take a `context.Context`.
 
-**Safety invariants — preserve these when editing:**
-- Local cleanup in `uploadBackup.sh` runs *only* inside the `if rclone copy ... ; then` success branch. A failed upload must never delete local files.
-- `cleanRemoteBackups.sh` refuses to delete unless a recent backup (within `REMOTE_CLEANUP_SAFETY_DAYS`) exists on the remote, guarding against wiping history when the upload cron has silently stopped. The `-f` flag bypasses this lock — treat it as dangerous.
-- All scripts use `set -euo pipefail`. `uploadBackup.sh` installs an EXIT trap (`cleanup_on_error`) that logs unexpected failures; it is explicitly removed (`trap - EXIT`) before clean exits.
+**backup package** mirrors the original scripts and ports their logging (`Logger` writes timestamped, fixed-width-level lines to `sync.log` and to a sink callback; the upload SYNC SUMMARY block is appended verbatim). The Logger sink is what makes one engine serve both the UI (sink → Bubbletea msgs) and headless mode (sink → stdout).
 
-**Logging**: `upload` and `clean` share an identical `_log`/`log_info`/`log_warn`/`log_error`/`log_verbose` helper block that writes both to stdout and `LOG_FILE` (default `$SCRIPT_DIR/sync.log`). `restore` instead logs only to the terminal with ANSI colors (it's interactive). Upload appends a fixed-width "SYNC SUMMARY" block to the log at the end of every run. If editing log format, keep these consistent across scripts.
+## Safety invariants — preserve these when editing
 
-**rclone invocation**: flags are built into a Bash array (`RCLONE_FLAGS`) and conditionally appended, then expanded as `"${RCLONE_FLAGS[@]}"`. Verbosity maps to rclone log level via `rclone_log_level` (`DEBUG` when `-v`, else `NOTICE`).
+- **Upload performs local cleanup ONLY inside the success branch** of a project's `rclone copy`. A failed upload increments the error count and `continue`s; it must never delete local files. (`backup/upload.go`)
+- **Clean enforces a safety lock**: before deleting it confirms a backup newer than `RemoteCleanupSafetyDays` exists on the remote (`rclone lsf --max-age`), aborting with `ErrNoRecentBackup` otherwise. `CleanOptions.Force` bypasses it — treat as dangerous. (`backup/clean.go`)
+- **Clean starts from a dry-run** in the UI; real deletion requires an explicit key. (`tui/clean.go`)
+- **Restore logs to the terminal only** (`NewLogger("")`), like the original interactive script — it does not append to `sync.log`.
+- **Cron edits touch only the `# >>> RCSS-managed >>>` … `# <<< RCSS-managed <<<` block**; all other crontab lines are preserved. Disabling all presets removes the block. (`cron/cron.go`)
 
-## Planned TUI (see plan.md)
+## TUI conventions (Elm architecture)
 
-Go + Bubbletea/Lipgloss/Bubbles, living in `tui/`. The intended boundary: the TUI shells out to the existing scripts via `exec.Command` for upload and clean (capturing piped stdout/stderr live), but **reimplements restore in Go** — calling `rclone lsf`/`rclone copy` directly rather than driving `restoreBackup.sh`'s interactive `select_from_list` prompts. Scripts stay in the repo root and remain the source of truth for backup logic; `backup.env` stays shared. Read `plan.md` before starting TUI work.
+- The root `Model` (`tui/app.go`) holds `width/height`, the active `screen` enum, and one sub-model per screen. It enforces the **80×24 minimum** guard, routes `tea.WindowSizeMsg`/keys/screen-switches, and frames each screen with a shared footer (`withFooter`). Global keys: `ctrl+c` always quits; `q` quits; `esc` goes back.
+- **Sub-models are value types** with `Update(msg) (subModel, tea.Cmd)` and `View() string`; they communicate upward with small messages (`switchScreenMsg`, `goBackMsg`, `remoteChosenMsg`, `folderChosenMsg`, `settingsSavedMsg`). The root sets `m.cfg` on these and recreates cfg-dependent sub-models on screen entry.
+- Sub-models that get sized on `WindowSizeMsg` (lists, huh forms, viewport) **must be initialized in `New`**, or `SetSize`/`WithWidth` will panic on a zero value.
+- Streaming backup operations use `tui/stream.go`'s `opStream`: the operation runs in a goroutine writing lines through the Logger sink; `opStream.wait()` is a command that delivers one `opEvent` at a time (buffered channel = backpressure). `finishWith` carries a typed result (e.g. `UploadResult`).
+- Reuse the shared lipgloss styles in `styles.go`; don't inline colors.
+
+## Reference scripts
+
+`*.sh` and `backup.env` are kept as a portability reference and are **not** part of the build. When the Go port is fully trusted they can be removed (they remain in git history). Don't add new logic to them.
