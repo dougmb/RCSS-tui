@@ -2,75 +2,45 @@ package tui
 
 import (
 	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
-// menuItem is a main-menu row. Selecting it routes to its target screen.
+// menuItem is a sidebar row. Selecting it opens its target screen in the detail
+// pane.
 type menuItem struct {
 	title  string
 	desc   string
 	target screen
 }
 
-// Title, Description and FilterValue satisfy list.Item / DefaultItem so the
-// bubbles/list default delegate can render and filter the menu.
+// Title, Description and FilterValue satisfy list.Item / DefaultItem.
 func (i menuItem) Title() string       { return i.title }
 func (i menuItem) Description() string { return i.desc }
 func (i menuItem) FilterValue() string { return i.title }
 
-// newMenu builds the main-menu list. Each entry maps to the screen its step
-// implements; until then the target renders a "coming soon" placeholder.
+// newMenu builds the sidebar menu list. The delegate is compact (titles only)
+// so the narrow sidebar fits all entries; the description is shown in the
+// detail pane preview instead.
 func newMenu() list.Model {
 	items := []list.Item{
-		menuItem{"Account", "Choose the rclone remote / configure a new one", screenAccount},
-		menuItem{"Backup folder", "Pick the local folder to back up", screenFolder},
-		menuItem{"Backups", "Browse remote backups and restore", screenBackups},
-		menuItem{"Upload", "Run a backup now", screenUpload},
-		menuItem{"Clean", "Remove old remote backups", screenClean},
-		menuItem{"Settings", "Edit retention and behavior", screenSettings},
-		menuItem{"Schedule", "Manage cron jobs", screenSchedule},
-		menuItem{"Logs", "View the sync log", screenLogs},
+		menuItem{"Account", "Choose the rclone remote, or configure a new one with `rclone config`.", screenAccount},
+		menuItem{"Backup folder", "Pick the local folder whose sub-folders and files are backed up.", screenFolder},
+		menuItem{"Backups", "Browse remote folders and files and restore one.", screenBackups},
+		menuItem{"Upload", "Run a backup now, streaming rclone progress.", screenUpload},
+		menuItem{"Clean", "Preview (dry-run) then delete old remote backups.", screenClean},
+		menuItem{"Settings", "Edit retention and behavior, saved to config.toml.", screenSettings},
+		menuItem{"Schedule", "Install daily-upload / weekly-clean jobs into your crontab.", screenSchedule},
+		menuItem{"Logs", "Scroll the sync log with ERROR/WARN highlighting.", screenLogs},
 	}
 
-	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "RCSS — Rclone Cloud Simple Scripts"
+	d := list.NewDefaultDelegate()
+	d.ShowDescription = false
+	d.SetSpacing(0)
+
+	l := list.New(items, d, 0, 0)
+	l.Title = "RCSS"
 	l.SetShowStatusBar(false)
-	l.SetShowHelp(false) // the root model renders its own footer
+	l.SetShowHelp(false)
+	l.SetShowPagination(false)
 	l.Styles.Title = titleStyle
 	return l
-}
-
-// switchScreenMsg requests a screen change. updateMenu emits it on selection.
-type switchScreenMsg struct{ screen screen }
-
-// switchTo returns a command that routes to the given screen.
-func switchTo(s screen) tea.Cmd {
-	return func() tea.Msg { return switchScreenMsg{screen: s} }
-}
-
-// updateMenu handles key input while the menu is active. While the list is
-// filtering it forwards every key to the list (so typing, esc and enter act on
-// the filter). Otherwise enter routes to the selected screen, q quits, and the
-// rest drives list navigation.
-func (m Model) updateMenu(msg tea.KeyMsg) (Model, tea.Cmd) {
-	if m.menu.FilterState() == list.Filtering {
-		var cmd tea.Cmd
-		m.menu, cmd = m.menu.Update(msg)
-		return m, cmd
-	}
-
-	switch msg.String() {
-	case "q":
-		m.quitting = true
-		return m, tea.Quit
-	case "enter":
-		if it, ok := m.menu.SelectedItem().(menuItem); ok {
-			return m, switchTo(it.target)
-		}
-		return m, nil
-	}
-
-	var cmd tea.Cmd
-	m.menu, cmd = m.menu.Update(msg)
-	return m, cmd
 }

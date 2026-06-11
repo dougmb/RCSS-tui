@@ -11,32 +11,62 @@ import (
 	"github.com/dougmb/rcss-tui/rclone"
 )
 
-// ListProjects returns the project folders available on the remote
-// (<remote>/<dest>/), with trailing slashes stripped. Mirrors
-// `rclone lsf --dirs-only`.
-func ListProjects(ctx context.Context, cfg config.Config, rc *rclone.Client) ([]string, error) {
-	entries, err := rc.Lsf(ctx, remoteDest(cfg)+"/", rclone.LsfOptions{Mode: rclone.LsfDirsOnly})
+// RemoteEntry is one item in a remote listing: a project folder or a file.
+type RemoteEntry struct {
+	Name  string
+	IsDir bool
+}
+
+// isDirNotFound reports whether err is rclone's "directory not found" — the
+// expected state before any backup has been uploaded (the destination folder
+// doesn't exist yet). Callers treat it as an empty listing, not a failure.
+func isDirNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "directory not found")
+}
+
+// ListTopLevel lists the destination root: project folders (IsDir) and loose
+// files. Returns an empty slice (no error) when the destination doesn't exist
+// yet. Directories are listed before files, each group reverse-sorted by name.
+func ListTopLevel(ctx context.Context, cfg config.Config, rc *rclone.Client) ([]RemoteEntry, error) {
+	lines, err := rc.Lsf(ctx, remoteDest(cfg)+"/", rclone.LsfOptions{Mode: rclone.LsfAll})
+	if isDirNotFound(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	projects := make([]string, 0, len(entries))
-	for _, e := range entries {
-		projects = append(projects, strings.TrimSuffix(e, "/"))
+
+	var dirs, files []RemoteEntry
+	for _, l := range lines {
+		if strings.HasSuffix(l, "/") {
+			dirs = append(dirs, RemoteEntry{Name: strings.TrimSuffix(l, "/"), IsDir: true})
+		} else {
+			files = append(files, RemoteEntry{Name: l})
+		}
 	}
-	return projects, nil
+	reverseByName(dirs)
+	reverseByName(files)
+	return append(dirs, files...), nil
 }
 
 // ListFiles returns the files inside a remote project, newest first (reverse
 // sorted by name, matching restoreBackup.sh's `sort -r`). Mirrors
-// `rclone lsf --files-only`.
+// `rclone lsf --files-only`. An absent project yields an empty slice.
 func ListFiles(ctx context.Context, cfg config.Config, rc *rclone.Client, project string) ([]string, error) {
 	path := joinRemote(cfg.RemoteName, cfg.DriveDestination, project) + "/"
 	files, err := rc.Lsf(ctx, path, rclone.LsfOptions{Mode: rclone.LsfFilesOnly})
+	if isDirNotFound(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(files)))
 	return files, nil
+}
+
+func reverseByName(es []RemoteEntry) {
+	sort.Slice(es, func(i, j int) bool { return es[i].Name > es[j].Name })
 }
 
 // RestoreOptions tweaks a Restore run.
@@ -57,8 +87,8 @@ type RestoreOptions struct {
 // the local destination via rclone copy with --ignore-times. The destination
 // directory is created if needed.
 func Restore(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logger, project, file string, opts RestoreOptions) error {
-	if project == "" || file == "" {
-		return fmt.Errorf("restore requires both a project and a file")
+	if file == "" {
+		return fmt.Errorf("restore requires a file")
 	}
 
 	localPath := opts.OutputPath
@@ -66,7 +96,12 @@ func Restore(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Log
 		if cfg.BackupRoot == "" {
 			return fmt.Errorf("config incomplete: backup_root not set")
 		}
-		localPath = joinRemoteLocal(cfg.BackupRoot, project)
+		// Root-level files restore into BackupRoot; project files into a
+		// matching sub-folder.
+		localPath = cfg.BackupRoot
+		if project != "" {
+			localPath = joinRemoteLocal(cfg.BackupRoot, project)
+		}
 	}
 	if err := os.MkdirAll(localPath, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", localPath, err)

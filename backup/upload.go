@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dougmb/rcss-tui/config"
@@ -58,11 +59,16 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 		return res, err
 	}
 
+	projects, looseFiles := 0, 0
 	for _, entry := range entries {
 		if ctx.Err() != nil {
 			return res, ctx.Err()
 		}
+		// Loose top-level files are uploaded as a group after the loop.
 		if !entry.IsDir() {
+			if entry.Type().IsRegular() && !(cfg.SkipDotfiles && strings.HasPrefix(entry.Name(), ".")) {
+				looseFiles++
+			}
 			continue
 		}
 		name := entry.Name()
@@ -70,6 +76,7 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 			log.Verbosef("   - Skipping ignored/reserved folder: %s", name)
 			continue
 		}
+		projects++
 
 		projectPath := filepath.Join(cfg.BackupRoot, name)
 		log.Infof("→ Processing project: %s", name)
@@ -110,6 +117,15 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 		log.Verbosef("   Project time: %s", time.Since(stepStart).Round(time.Second))
 	}
 
+	// Upload loose top-level files (any type) to the destination root.
+	if looseFiles > 0 {
+		uploadLooseFiles(ctx, cfg, rc, log, opts, &res)
+	}
+
+	if projects == 0 && looseFiles == 0 {
+		log.Warnf("Nothing to back up: %s has no project sub-folders or files.", cfg.BackupRoot)
+	}
+
 	res.Duration = time.Since(overallStart)
 	if res.UploadErrors > 0 {
 		res.Status = "PARTIAL"
@@ -123,6 +139,46 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 		return res, fmt.Errorf("%d project(s) failed to upload", res.UploadErrors)
 	}
 	return res, nil
+}
+
+// uploadLooseFiles uploads the regular files sitting directly in BackupRoot
+// (not inside any project sub-folder) to the destination root, then runs local
+// cleanup on them — the same success-only invariant as projects. It uses
+// --max-depth 1 so rclone copies only top-level files and never descends into
+// the project sub-folders (those are handled separately).
+func uploadLooseFiles(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logger, opts UploadOptions, res *UploadResult) {
+	log.Infof("→ Uploading loose files in %s", cfg.BackupRoot)
+	stepStart := time.Now()
+
+	copyOpts := rclone.CopyOptions{
+		LogLevel:     log.RcloneLogLevel(),
+		StatsOneLine: true,
+		Stats:        "10s",
+		Update:       true,
+		UseMmap:      true,
+		Retries:      3,
+		Progress:     opts.ShowProgress,
+		MaxDepth:     1,
+	}
+	if cfg.SkipDotfiles {
+		copyOpts.Excludes = []string{".*"}
+	}
+
+	dst := remoteDest(cfg)
+	if err := rc.Copy(ctx, cfg.BackupRoot, dst, copyOpts, log.Raw); err != nil {
+		log.Warnf("   ⚠ Loose file upload failed. Local cleanup SKIPPED.")
+		res.UploadErrors++
+		return
+	}
+
+	log.Infof("   ✓ Synchronized successfully.")
+	deleted, delErrs := cleanupLocal(cfg.BackupRoot, cfg, log)
+	if deleted > 0 {
+		log.Infof("   - Removed %d local files.", deleted)
+	}
+	res.FilesDeleted += deleted
+	res.DeleteErrors += delErrs
+	log.Verbosef("   Loose files time: %s", time.Since(stepStart).Round(time.Second))
 }
 
 // cleanupLocal removes top-level files from projectPath after a successful
@@ -154,6 +210,10 @@ func cleanupLocal(projectPath string, cfg config.Config, log *Logger) (deleted, 
 		}
 		// Skip irregular files (symlinks, sockets, …): -type f only.
 		if !info.Mode().IsRegular() {
+			continue
+		}
+		// Don't delete dotfiles that were excluded from the upload.
+		if cfg.SkipDotfiles && strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		if !cfg.DeleteAfterUpload && !info.ModTime().Before(cutoff) {

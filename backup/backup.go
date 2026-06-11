@@ -24,7 +24,9 @@ func remoteDest(cfg config.Config) string {
 }
 
 // joinRemote joins remote path segments with single slashes, trimming any
-// stray slashes between parts while preserving the remote-name colon.
+// stray slashes between parts while preserving the remote-name colon. Empty
+// segments (e.g. an unset project when restoring a root-level file) are
+// dropped so no double slash appears.
 func joinRemote(parts ...string) string {
 	cleaned := make([]string, 0, len(parts))
 	for i, p := range parts {
@@ -32,7 +34,9 @@ func joinRemote(parts ...string) string {
 			cleaned = append(cleaned, strings.TrimRight(p, "/"))
 			continue
 		}
-		cleaned = append(cleaned, strings.Trim(p, "/"))
+		if trimmed := strings.Trim(p, "/"); trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		}
 	}
 	return strings.Join(cleaned, "/")
 }

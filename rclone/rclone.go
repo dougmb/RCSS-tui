@@ -108,6 +108,7 @@ type CopyOptions struct {
 	IgnoreTimes  bool     // --ignore-times
 	Verbose      bool     // -v
 	DryRun       bool     // --dry-run
+	MaxDepth     int      // --max-depth N (omitted if <= 0)
 }
 
 // Copy runs `rclone copy src dst` with the given options. Each line of
@@ -144,6 +145,9 @@ func (c *Client) Copy(ctx context.Context, src, dst string, opts CopyOptions, on
 	}
 	if opts.DryRun {
 		args = append(args, "--dry-run")
+	}
+	if opts.MaxDepth > 0 {
+		args = append(args, "--max-depth", fmt.Sprintf("%d", opts.MaxDepth))
 	}
 	for _, pat := range opts.Excludes {
 		args = append(args, "--exclude", pat)

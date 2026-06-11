@@ -32,9 +32,29 @@ const (
 // --- messages ---
 
 type projectsLoadedMsg struct {
-	projects []string
-	err      error
+	entries []backup.RemoteEntry
+	err     error
 }
+
+// entryItem is a top-level backup entry: a project folder or a loose file.
+type entryItem struct {
+	name  string
+	isDir bool
+}
+
+func (e entryItem) Title() string {
+	if e.isDir {
+		return "📁 " + e.name
+	}
+	return "📄 " + e.name
+}
+func (e entryItem) Description() string {
+	if e.isDir {
+		return "project folder"
+	}
+	return "file"
+}
+func (e entryItem) FilterValue() string { return e.name }
 
 type filesLoadedMsg struct {
 	files []string
@@ -75,7 +95,7 @@ func newBackupsModel(cfg config.Config, rc *rclone.Client) backupsModel {
 		cfg:      cfg,
 		rc:       rc,
 		state:    bsLoadingProjects,
-		projects: mkList("Select project"),
+		projects: mkList("Select a backup (📁 folder or 📄 file)"),
 		files:    mkList("Select file to restore"),
 		spinner:  sp,
 	}
@@ -87,12 +107,13 @@ func (b *backupsModel) setSize(w, h int) {
 	b.files.SetSize(w, h)
 }
 
-// loadProjects lists the remote project folders.
+// loadProjects lists the remote top-level entries (project folders and loose
+// files).
 func (b backupsModel) loadProjects() tea.Cmd {
 	cfg, rc := b.cfg, b.rc
 	return func() tea.Msg {
-		ps, err := backup.ListProjects(context.Background(), cfg, rc)
-		return projectsLoadedMsg{projects: ps, err: err}
+		es, err := backup.ListTopLevel(context.Background(), cfg, rc)
+		return projectsLoadedMsg{entries: es, err: err}
 	}
 }
 
@@ -134,7 +155,11 @@ func (b backupsModel) Update(msg tea.Msg) (backupsModel, tea.Cmd) {
 			b.state, b.err = bsError, msg.err
 			return b, nil
 		}
-		b.projects.SetItems(toItems(msg.projects))
+		items := make([]list.Item, len(msg.entries))
+		for i, e := range msg.entries {
+			items[i] = entryItem{name: e.Name, isDir: e.IsDir}
+		}
+		b.projects.SetItems(items)
 		b.state = bsProjects
 		return b, nil
 
@@ -200,10 +225,16 @@ func (b backupsModel) handleKey(msg tea.KeyMsg) (backupsModel, tea.Cmd) {
 	case "enter":
 		switch b.state {
 		case bsProjects:
-			if it, ok := b.projects.SelectedItem().(stringItem); ok {
-				b.selectedProject = string(it)
-				b.state = bsLoadingFiles
-				return b, tea.Batch(b.loadFiles(), b.spinner.Tick)
+			if it, ok := b.projects.SelectedItem().(entryItem); ok {
+				if it.isDir {
+					// Drill into a project folder to choose a file.
+					b.selectedProject = it.name
+					b.state = bsLoadingFiles
+					return b, tea.Batch(b.loadFiles(), b.spinner.Tick)
+				}
+				// A loose file at the destination root: restore it directly.
+				b.selectedProject = ""
+				return b.startRestore(it.name)
 			}
 		case bsFiles:
 			if it, ok := b.files.SelectedItem().(stringItem); ok {
@@ -234,8 +265,12 @@ func (b backupsModel) handleKey(msg tea.KeyMsg) (backupsModel, tea.Cmd) {
 func (b backupsModel) View() string {
 	switch b.state {
 	case bsLoadingProjects:
-		return b.spinner.View() + " Loading projects…"
+		return b.spinner.View() + " Loading backups…"
 	case bsProjects:
+		if len(b.projects.Items()) == 0 {
+			return titleStyle.Render("Backups") + "\n\n" +
+				subtitleStyle.Render("No backups found on the remote yet. Run an upload first.")
+		}
 		return b.projects.View()
 	case bsLoadingFiles:
 		return b.spinner.View() + " Loading files for " + b.selectedProject + "…"

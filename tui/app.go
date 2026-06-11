@@ -1,12 +1,12 @@
 // Package tui implements the RCSS terminal UI on top of Bubbletea (the Elm
-// architecture: Model/Update/View). app.go holds the root model: it tracks the
-// window size, enforces the minimum size guard, routes between screens, and
-// handles the global keybindings. Individual screens land in later steps.
+// architecture: Model/Update/View). app.go holds the root model: a two-pane
+// layout — a sidebar menu on the left and a detail pane on the right that
+// previews or edits the selected item. It tracks window size, enforces the
+// minimum-size guard, manages focus between the panes, and routes input.
 package tui
 
 import (
 	"os"
-	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,21 +16,20 @@ import (
 	"github.com/dougmb/rcss-tui/rclone"
 )
 
-// Minimum terminal size. Below this the UI renders only a centered warning,
-// per the project's confirmed decision.
+// Minimum terminal size. Below this the UI renders only a centered warning.
 const (
 	MinWidth  = 80
-	MinHeight = 24
+	MinHeight = 12
 )
 
-// screen identifies the active sub-view. The menu is the entry point; the
-// other screens are filled in by their respective steps and until then render
-// a placeholder.
+// sidebarWidth is the inner content width of the menu pane.
+const sidebarWidth = 24
+
+// screen identifies the detail-pane sub-view selected from the menu.
 type screen int
 
 const (
-	screenMenu screen = iota
-	screenAccount
+	screenAccount screen = iota
 	screenFolder
 	screenBackups
 	screenUpload
@@ -40,29 +39,13 @@ const (
 	screenLogs
 )
 
-// screenName is the human label used in placeholder views and titles.
-func (s screen) String() string {
-	switch s {
-	case screenAccount:
-		return "Account"
-	case screenFolder:
-		return "Backup folder"
-	case screenBackups:
-		return "Backups"
-	case screenUpload:
-		return "Upload"
-	case screenClean:
-		return "Clean"
-	case screenSettings:
-		return "Settings"
-	case screenSchedule:
-		return "Schedule"
-	case screenLogs:
-		return "Logs"
-	default:
-		return "Menu"
-	}
-}
+// focus indicates which pane currently receives input.
+type focusArea int
+
+const (
+	focusSidebar focusArea = iota
+	focusDetail
+)
 
 // Model is the root Bubbletea model.
 type Model struct {
@@ -70,9 +53,13 @@ type Model struct {
 	rc  *rclone.Client
 
 	width, height int
+	detailW       int
+	detailH       int
 	ready         bool
 
-	screen   screen
+	focus  focusArea
+	screen screen
+
 	menu     list.Model
 	account  accountModel
 	folder   folderModel
@@ -82,8 +69,27 @@ type Model struct {
 	settings settingsModel
 	schedule scheduleModel
 	logs     logsModel
+
 	saveErr  error
 	quitting bool
+}
+
+// New builds the root model with its dependencies and all sub-models.
+func New(cfg config.Config, rc *rclone.Client) Model {
+	return Model{
+		cfg:      cfg,
+		rc:       rc,
+		focus:    focusSidebar,
+		screen:   screenAccount,
+		menu:     newMenu(),
+		account:  newAccountModel(rc, cfg.RemoteName),
+		backups:  newBackupsModel(cfg, rc),
+		upload:   newUploadModel(cfg, rc),
+		clean:    newCleanModel(cfg, rc),
+		settings: newSettingsModel(cfg),
+		schedule: newScheduleModel(cfg),
+		logs:     newLogsModel(cfg),
+	}
 }
 
 // folderStart is the directory the picker opens at: the configured BackupRoot
@@ -98,318 +104,305 @@ func (m Model) folderStart() string {
 	return "."
 }
 
-// New builds the root model with its dependencies. The config and rclone
-// client are held for the screens added in later steps.
-func New(cfg config.Config, rc *rclone.Client) Model {
-	return Model{
-		cfg:      cfg,
-		rc:       rc,
-		screen:   screenMenu,
-		menu:     newMenu(),
-		account:  newAccountModel(rc, cfg.RemoteName),
-		backups:  newBackupsModel(cfg, rc),
-		upload:   newUploadModel(cfg, rc),
-		clean:    newCleanModel(cfg, rc),
-		settings: newSettingsModel(cfg),
-		schedule: newScheduleModel(cfg),
-		logs:     newLogsModel(cfg),
-	}
-}
-
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd { return nil }
 
-// Update implements tea.Model: it handles window resizes, screen routing, and
-// the global keybindings, delegating the rest to the active screen.
+// contentW is the text width inside the detail pane (pane width minus its
+// horizontal padding).
+func (m Model) contentW() int {
+	if w := m.detailW - 2; w > 1 {
+		return w
+	}
+	return 1
+}
+
+// resizeDetail propagates the current detail-pane dimensions to every
+// sub-model and the sidebar.
+func (m *Model) resizeDetail() {
+	w, h := m.contentW(), m.detailH
+	m.menu.SetSize(sidebarWidth-2, h)
+	m.account.setSize(w, h)
+	m.backups.setSize(w, h)
+	m.upload.setHeight(h)
+	m.clean.setHeight(h)
+	m.settings.setSize(w, h)
+	m.schedule.setSize(w, h)
+	m.logs.setSize(w, h)
+	// The picker keeps a 3-line header inside the detail pane.
+	m.folder.setHeight(h - 4)
+}
+
+// Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
-		// Reserve room for the app frame padding and the footer line.
-		m.menu.SetSize(m.width-4, m.height-3)
-		m.account.setSize(m.width-4, m.height-3)
-		m.backups.setSize(m.width-4, m.height-4)
-		m.upload.setHeight(m.height - 4)
-		m.clean.setHeight(m.height - 4)
-		m.settings.setSize(m.width-4, m.height-3)
-		m.schedule.setSize(m.width-4, m.height-3)
-		m.logs.setSize(m.width-4, m.height-3)
-		// Picker body sits below a 3-line header and above the footer.
-		m.folder.setHeight(m.height - 7)
-		return m, nil
-
-	case switchScreenMsg:
-		m.screen = msg.screen
-		switch msg.screen {
-		case screenAccount:
-			// Re-list remotes and reflect the current selection each entry.
-			m.account.current = m.cfg.RemoteName
-			return m, m.account.load()
-		case screenFolder:
-			// Open the picker fresh at the configured root (or home).
-			m.folder = newFolderModel(m.folderStart())
-			m.folder.setHeight(m.height - 7)
-			return m, m.folder.Init()
-		case screenBackups:
-			// Re-fetch the remote project list on each entry.
-			m.backups = newBackupsModel(m.cfg, m.rc)
-			m.backups.setSize(m.width-4, m.height-4)
-			return m, tea.Batch(m.backups.loadProjects(), m.backups.spinner.Tick)
-		case screenUpload:
-			// Reset to the idle/confirm state with the latest config.
-			m.upload = newUploadModel(m.cfg, m.rc)
-			m.upload.setHeight(m.height - 4)
-			return m, nil
-		case screenClean:
-			// Start the dry-run preview immediately.
-			m.clean = newCleanModel(m.cfg, m.rc)
-			m.clean.setHeight(m.height - 4)
-			var cmd tea.Cmd
-			m.clean, cmd = m.clean.run(true)
-			return m, cmd
-		case screenSettings:
-			m.settings = newSettingsModel(m.cfg)
-			m.settings.setSize(m.width-4, m.height-3)
-			return m, m.settings.Init()
-		case screenSchedule:
-			m.schedule = newScheduleModel(m.cfg)
-			m.schedule.setSize(m.width-4, m.height-3)
-			return m, m.schedule.Init()
-		case screenLogs:
-			m.logs = newLogsModel(m.cfg)
-			m.logs.setSize(m.width-4, m.height-3)
-			m.logs.reload()
-			return m, nil
+		// Pane borders take 2 cols each, plus a 1-col gap; the footer takes 1
+		// row and borders take 2 rows.
+		m.detailW = m.width - sidebarWidth - 5
+		if m.detailW < 1 {
+			m.detailW = 1
 		}
+		m.detailH = m.height - 3
+		if m.detailH < 1 {
+			m.detailH = 1
+		}
+		m.resizeDetail()
 		return m, nil
 
 	case settingsSavedMsg:
 		m.cfg = msg.cfg
 		m.saveErr = config.Save(m.cfg)
-		m.screen = screenMenu
+		m.focus = focusSidebar
 		return m, nil
 
 	case remoteChosenMsg:
 		m.cfg.RemoteName = msg.name
 		m.saveErr = config.Save(m.cfg)
-		m.screen = screenMenu
+		m.focus = focusSidebar
 		return m, nil
 
 	case folderChosenMsg:
 		m.cfg.BackupRoot = msg.path
 		m.saveErr = config.Save(m.cfg)
-		m.screen = screenMenu
+		m.focus = focusSidebar
 		return m, nil
 
 	case goBackMsg:
-		m.screen = screenMenu
+		m.focus = focusSidebar
 		return m, nil
 
 	case tea.KeyMsg:
-		// Ctrl+C always quits, regardless of the active screen or filtering.
 		if msg.String() == "ctrl+c" {
 			m.quitting = true
 			return m, tea.Quit
 		}
-
-		switch m.screen {
-		case screenMenu:
-			var cmd tea.Cmd
-			m, cmd = m.updateMenu(msg)
-			return m, cmd
-		case screenAccount:
-			var cmd tea.Cmd
-			m.account, cmd = m.account.Update(msg)
-			return m, cmd
-		case screenFolder:
-			var cmd tea.Cmd
-			m.folder, cmd = m.folder.Update(msg)
-			return m, cmd
-		case screenBackups:
-			var cmd tea.Cmd
-			m.backups, cmd = m.backups.Update(msg)
-			return m, cmd
-		case screenUpload:
-			var cmd tea.Cmd
-			m.upload, cmd = m.upload.Update(msg)
-			return m, cmd
-		case screenClean:
-			var cmd tea.Cmd
-			m.clean, cmd = m.clean.Update(msg)
-			return m, cmd
-		case screenSettings:
-			var cmd tea.Cmd
-			m.settings, cmd = m.settings.Update(msg)
-			return m, cmd
-		case screenSchedule:
-			var cmd tea.Cmd
-			m.schedule, cmd = m.schedule.Update(msg)
-			return m, cmd
-		case screenLogs:
-			var cmd tea.Cmd
-			m.logs, cmd = m.logs.Update(msg)
-			return m, cmd
-		default:
-			// Placeholder screens: esc/backspace return to the menu, q quits.
-			switch msg.String() {
-			case "esc", "backspace":
-				m.screen = screenMenu
-				return m, nil
-			case "q":
-				m.quitting = true
-				return m, tea.Quit
-			}
+		if m.focus == focusSidebar {
+			return m.updateSidebar(msg)
 		}
+		return m.updateDetail(msg)
 	}
 
-	// Non-key messages (e.g. remotesLoadedMsg, filepicker's readDirMsg) route
-	// to the active screen.
-	switch m.screen {
+	// Non-key messages route to the active detail screen.
+	return m.updateDetail(msg)
+}
+
+// updateSidebar handles input while the menu pane is focused.
+func (m Model) updateSidebar(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.menu.FilterState() == list.Filtering {
+		var cmd tea.Cmd
+		m.menu, cmd = m.menu.Update(msg)
+		return m, cmd
+	}
+	switch msg.String() {
+	case "q":
+		m.quitting = true
+		return m, tea.Quit
+	case "enter", "right", "l", "tab":
+		return m.activate()
+	}
+	var cmd tea.Cmd
+	m.menu, cmd = m.menu.Update(msg)
+	return m, cmd
+}
+
+// activate opens the highlighted menu item in the detail pane and moves focus
+// there.
+func (m Model) activate() (tea.Model, tea.Cmd) {
+	it, ok := m.menu.SelectedItem().(menuItem)
+	if !ok {
+		return m, nil
+	}
+	m.screen = it.target
+	m.focus = focusDetail
+	return m.enterScreen(it.target)
+}
+
+// enterScreen (re)initializes the chosen screen and returns its load/init
+// command, so each entry starts fresh against the current config.
+func (m Model) enterScreen(s screen) (tea.Model, tea.Cmd) {
+	switch s {
 	case screenAccount:
-		var cmd tea.Cmd
-		m.account, cmd = m.account.Update(msg)
-		return m, cmd
+		m.account.current = m.cfg.RemoteName
+		return m, m.account.load()
 	case screenFolder:
-		var cmd tea.Cmd
-		m.folder, cmd = m.folder.Update(msg)
-		return m, cmd
+		m.folder = newFolderModel(m.folderStart())
+		m.folder.setHeight(m.detailH - 4)
+		return m, m.folder.Init()
 	case screenBackups:
-		var cmd tea.Cmd
-		m.backups, cmd = m.backups.Update(msg)
-		return m, cmd
+		m.backups = newBackupsModel(m.cfg, m.rc)
+		m.backups.setSize(m.contentW(), m.detailH)
+		return m, tea.Batch(m.backups.loadProjects(), m.backups.spinner.Tick)
 	case screenUpload:
-		var cmd tea.Cmd
-		m.upload, cmd = m.upload.Update(msg)
-		return m, cmd
+		m.upload = newUploadModel(m.cfg, m.rc)
+		m.upload.setHeight(m.detailH)
+		return m, nil
 	case screenClean:
+		m.clean = newCleanModel(m.cfg, m.rc)
+		m.clean.setHeight(m.detailH)
 		var cmd tea.Cmd
-		m.clean, cmd = m.clean.Update(msg)
+		m.clean, cmd = m.clean.run(true)
 		return m, cmd
 	case screenSettings:
-		var cmd tea.Cmd
-		m.settings, cmd = m.settings.Update(msg)
-		return m, cmd
+		m.settings = newSettingsModel(m.cfg)
+		m.settings.setSize(m.contentW(), m.detailH)
+		return m, m.settings.Init()
 	case screenSchedule:
-		var cmd tea.Cmd
-		m.schedule, cmd = m.schedule.Update(msg)
-		return m, cmd
+		m.schedule = newScheduleModel(m.cfg)
+		m.schedule.setSize(m.contentW(), m.detailH)
+		return m, m.schedule.Init()
 	case screenLogs:
-		var cmd tea.Cmd
-		m.logs, cmd = m.logs.Update(msg)
-		return m, cmd
+		m.logs = newLogsModel(m.cfg)
+		m.logs.setSize(m.contentW(), m.detailH)
+		m.logs.reload()
+		return m, nil
 	}
 	return m, nil
 }
 
-// View implements tea.Model: it applies the size guard, then renders the
-// active screen.
+// updateDetail routes a message to the active detail sub-model.
+func (m Model) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	switch m.screen {
+	case screenAccount:
+		m.account, cmd = m.account.Update(msg)
+	case screenFolder:
+		m.folder, cmd = m.folder.Update(msg)
+	case screenBackups:
+		m.backups, cmd = m.backups.Update(msg)
+	case screenUpload:
+		m.upload, cmd = m.upload.Update(msg)
+	case screenClean:
+		m.clean, cmd = m.clean.Update(msg)
+	case screenSettings:
+		m.settings, cmd = m.settings.Update(msg)
+	case screenSchedule:
+		m.schedule, cmd = m.schedule.Update(msg)
+	case screenLogs:
+		m.logs, cmd = m.logs.Update(msg)
+	}
+	return m, cmd
+}
+
+// View implements tea.Model.
 func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
 	if !m.ready {
-		return "" // wait for the first WindowSizeMsg
+		return ""
 	}
 	if m.width < MinWidth || m.height < MinHeight {
-		return m.viewTooSmall()
+		box := tooSmallStyle.Render("Not enough space to render panels")
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 	}
 
+	sidebar := paneStyle(m.focus == focusSidebar).
+		Width(sidebarWidth).Height(m.detailH).
+		Render(m.menu.View())
+
+	detail := paneStyle(m.focus == focusDetail).
+		Width(m.detailW).Height(m.detailH).
+		MarginLeft(1).
+		Render(m.detailView())
+
+	row := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, detail)
+	footer := helpStyle.PaddingLeft(1).Render(m.footerText())
+	return row + "\n" + footer
+}
+
+// detailView renders the right pane: a preview of the highlighted item when
+// the sidebar is focused, otherwise the active sub-model.
+func (m Model) detailView() string {
+	if m.focus == focusSidebar {
+		return m.previewView()
+	}
 	switch m.screen {
-	case screenMenu:
-		return m.viewMenu()
 	case screenAccount:
-		return m.viewAccount()
+		return m.account.View()
 	case screenFolder:
-		return m.viewFolder()
+		return m.folder.View()
 	case screenBackups:
-		return m.viewBackups()
+		return m.backups.View()
 	case screenUpload:
-		body := appStyle.Render(m.upload.View())
-		footer := helpStyle.PaddingLeft(2).Render(m.upload.footerHint())
-		return m.withFooter(body, footer)
+		return m.upload.View()
 	case screenClean:
-		body := appStyle.Render(m.clean.View())
-		footer := helpStyle.PaddingLeft(2).Render(m.clean.footerHint())
-		return m.withFooter(body, footer)
+		return m.clean.View()
 	case screenSettings:
-		body := appStyle.Render(m.settings.View())
-		footer := helpStyle.PaddingLeft(2).Render("tab/↑↓ navigate • enter next • esc cancel")
-		return m.withFooter(body, footer)
+		return m.settings.View()
 	case screenSchedule:
-		body := appStyle.Render(m.schedule.View())
-		footer := helpStyle.PaddingLeft(2).Render(m.schedule.footerHint())
-		return m.withFooter(body, footer)
+		return m.schedule.View()
 	case screenLogs:
-		body := appStyle.Render(m.logs.View())
-		footer := helpStyle.PaddingLeft(2).Render("↑/↓ scroll • r reload • esc back • q quit")
-		return m.withFooter(body, footer)
-	default:
-		return m.viewPlaceholder(m.screen)
+		return m.logs.View()
 	}
+	return ""
 }
 
-// viewBackups frames the backups sub-model with a state-dependent footer.
-func (m Model) viewBackups() string {
-	body := appStyle.Render(m.backups.View())
-	footer := helpStyle.PaddingLeft(2).Render(m.backups.footerHint())
-	return m.withFooter(body, footer)
-}
+// previewView shows the highlighted menu item's description plus relevant
+// current config, with a hint to open it.
+func (m Model) previewView() string {
+	it, ok := m.menu.SelectedItem().(menuItem)
+	if !ok {
+		return ""
+	}
+	body := titleStyle.Render(it.title) + "\n\n" + subtitleStyle.Render(it.desc)
 
-// viewFolder frames the directory picker with its footer.
-func (m Model) viewFolder() string {
-	body := appStyle.Render(m.folder.View())
-	footer := helpStyle.PaddingLeft(2).Render("↑/↓ move • →/l open • ←/h up • enter select dir • esc back • q quit")
-	return m.withFooter(body, footer)
-}
+	switch it.target {
+	case screenAccount:
+		body += "\n\n" + infoLine("Current remote", m.cfg.RemoteName)
+	case screenFolder:
+		body += "\n\n" + infoLine("Backup folder", m.cfg.BackupRoot)
+	case screenUpload, screenClean, screenBackups:
+		body += "\n\n" + infoLine("Remote", m.cfg.RemoteName) +
+			"\n" + infoLine("Destination", m.cfg.DriveDestination)
+	}
 
-// viewAccount frames the account sub-model with its footer.
-func (m Model) viewAccount() string {
-	body := appStyle.Render(m.account.View())
-	footer := helpStyle.PaddingLeft(2).Render("↑/↓ move • enter select • r refresh • / filter • esc back • q quit")
-	return m.withFooter(body, footer)
-}
-
-// viewTooSmall centers the fixed warning when the terminal is below 80×24.
-func (m Model) viewTooSmall() string {
-	box := tooSmallStyle.Render("Not enough space to render panels")
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
-}
-
-// viewMenu renders the bubbles/list main menu with the shared footer.
-func (m Model) viewMenu() string {
-	body := appStyle.Render(m.menu.View())
-
-	hint := "↑/↓ move • enter select • / filter • q quit"
 	if m.saveErr != nil {
-		hint = errorStyle.Render("Could not save config: "+m.saveErr.Error()) + "  •  " + hint
+		body += "\n\n" + errorStyle.Render("Could not save config: "+m.saveErr.Error())
 	}
-	footer := helpStyle.PaddingLeft(2).Render(hint)
-	return m.withFooter(body, footer)
+	body += "\n\n" + helpStyle.Render("Press enter to open →")
+	return body
 }
 
-// viewPlaceholder renders a not-yet-implemented screen so navigation is usable
-// before each screen's step lands.
-func (m Model) viewPlaceholder(s screen) string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(s.String()))
-	b.WriteString("\n\n")
-	b.WriteString(subtitleStyle.Render("Coming soon."))
-
-	body := appStyle.Render(b.String())
-	footer := helpStyle.PaddingLeft(2).Render("esc back • q quit")
-	return m.withFooter(body, footer)
+// infoLine renders a "label: value" line, showing a dash for empty values.
+func infoLine(label, value string) string {
+	if value == "" {
+		value = "—"
+	}
+	return subtitleStyle.Render(label+": ") + value
 }
 
-// withFooter pins the footer to the bottom of the screen without overflowing
-// the available height.
-func (m Model) withFooter(body, footer string) string {
-	gap := m.height - lipgloss.Height(body) - lipgloss.Height(footer)
-	if gap < 0 {
-		gap = 0
+// footerText returns the key hints for the focused pane.
+func (m Model) footerText() string {
+	if m.focus == focusSidebar {
+		return "↑/↓ move • enter/→ open • / filter • q quit"
 	}
-	return body + strings.Repeat("\n", gap) + footer
+	return m.detailFooter()
+}
+
+// detailFooter returns the key hints for the active detail screen.
+func (m Model) detailFooter() string {
+	switch m.screen {
+	case screenAccount:
+		return "↑/↓ move • enter select • r refresh • / filter • esc back"
+	case screenFolder:
+		return "↑/↓ move • →/l open • ←/h up • enter select dir • esc back"
+	case screenBackups:
+		return m.backups.footerHint()
+	case screenUpload:
+		return m.upload.footerHint()
+	case screenClean:
+		return m.clean.footerHint()
+	case screenSettings:
+		return "tab/↑↓ navigate • enter next • esc cancel"
+	case screenSchedule:
+		return m.schedule.footerHint()
+	case screenLogs:
+		return "↑/↓ scroll • r reload • esc back"
+	}
+	return "esc back • q quit"
 }
 
 // Run loads the dependencies into the root model and starts the program in the
