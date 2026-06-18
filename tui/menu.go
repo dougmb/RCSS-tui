@@ -25,11 +25,12 @@ func newMenu() list.Model {
 		menuItem{"Account", "Select or configure an rclone remote (e.g. Google Drive).", screenAccount},
 		menuItem{"Sync folder", "Choose the local directory whose sub-folders are synced to the cloud.", screenFolder},
 		menuItem{"Backups", "Browse cloud backups by project and restore individual files.", screenBackups},
-		menuItem{"Upload", "Sync all projects to the cloud now, with live progress.", screenUpload},
-		menuItem{"Clean", "Remove old cloud backups beyond retention, with dry-run preview.", screenClean},
+		menuItem{"Back Up Now", "Copy all projects to the cloud now (one-way upload), with live progress.", screenUpload},
+		menuItem{"Clean", "Remove old CLOUD backups beyond retention, with a dry-run preview and safety lock.", screenClean},
 		menuItem{"Settings", "Configure retention days, dotfiles, ignored folders and behavior.", screenSettings},
-		menuItem{"Schedule", "Set up automatic upload and clean schedules via crontab.", screenSchedule},
+		menuItem{"Schedule", "Set up automatic backup and clean schedules via your OS scheduler (crontab / Task Scheduler).", screenSchedule},
 		menuItem{"Logs", "View the sync log with colorized ERROR and WARN entries.", screenLogs},
+		menuItem{"About", "About RCSS: version, dependency status, and config locations.", screenAbout},
 	}
 
 	d := list.NewDefaultDelegate()

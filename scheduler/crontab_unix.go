@@ -1,15 +1,16 @@
-// Package cron manages a single delimited block in the user's crontab (no
-// root, no system files). RCSS owns only the lines between its markers; every
-// other crontab entry is preserved untouched. The scheduled lines invoke the
-// rcss binary in headless mode (e.g. `rcss upload`).
-package cron
+//go:build !windows
+
+package scheduler
 
 import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
+
+const backendName = "crontab"
 
 const (
 	beginMarker = "# >>> RCSS-managed >>>"
@@ -63,9 +64,9 @@ func stripBlock(content string) []string {
 	return kept
 }
 
-// ManagedLines returns the cron lines currently inside the RCSS block (without
+// managedLines returns the cron lines currently inside the RCSS block (without
 // the markers), or nil if the block is absent.
-func ManagedLines() ([]string, error) {
+func managedLines() ([]string, error) {
 	content, err := readCrontab()
 	if err != nil {
 		return nil, err
@@ -87,9 +88,9 @@ func ManagedLines() ([]string, error) {
 	return lines, nil
 }
 
-// SetManaged replaces the RCSS block with the given cron lines. Empty input
+// setManaged replaces the RCSS block with the given cron lines. Empty input
 // removes the block entirely. Other crontab entries are preserved.
-func SetManaged(lines []string) error {
+func setManaged(lines []string) error {
 	content, err := readCrontab()
 	if err != nil {
 		return err
@@ -111,5 +112,77 @@ func SetManaged(lines []string) error {
 	return writeCrontab(out)
 }
 
-// Remove deletes the RCSS-managed block from the crontab.
-func Remove() error { return SetManaged(nil) }
+// apply rewrites the managed block: it keeps every line that doesn't belong to
+// account, then appends one line per job for this account. Daily jobs use
+// "* * *" for the day fields; weekly jobs run on Sunday (dow 0). Each line runs
+// the rcss binary headless with --account so the right account is selected, and
+// appends stdout/stderr to logPath.
+func apply(account string, jobs []Job, exe, logPath string) error {
+	existing, err := managedLines()
+	if err != nil {
+		return err
+	}
+	var lines []string
+	for _, ln := range existing {
+		if lineAccount(ln) != account {
+			lines = append(lines, ln) // preserve other accounts' jobs
+		}
+	}
+	for _, j := range jobs {
+		dow := "*"
+		if j.Weekly {
+			dow = "0"
+		}
+		lines = append(lines, fmt.Sprintf(`%d %d * * %s %s %s --account %q >> %s 2>&1`,
+			j.Min, j.Hour, dow, exe, j.Kind.Arg(), account, logPath))
+	}
+	return setManaged(lines)
+}
+
+// current parses the managed crontab lines that belong to account back into
+// jobs. Lines that don't match the expected shape are skipped.
+func current(account string) ([]Job, error) {
+	lines, err := managedLines()
+	if err != nil {
+		return nil, err
+	}
+	var jobs []Job
+	for _, ln := range lines {
+		if lineAccount(ln) != account {
+			continue
+		}
+		f := strings.Fields(ln)
+		if len(f) < 6 {
+			continue
+		}
+		min, err1 := strconv.Atoi(f[0])
+		hour, err2 := strconv.Atoi(f[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		j := Job{Kind: Upload, Hour: hour, Min: min, Weekly: f[4] == "0"}
+		for _, tok := range f[5:] {
+			if tok == "clean" {
+				j.Kind = Clean
+				break
+			}
+			if tok == "upload" {
+				break
+			}
+		}
+		jobs = append(jobs, j)
+	}
+	return jobs, nil
+}
+
+// lineAccount returns the account a managed cron line targets (the token after
+// --account, unquoted), or "" if it carries none.
+func lineAccount(line string) string {
+	f := strings.Fields(line)
+	for i, tok := range f {
+		if tok == "--account" && i+1 < len(f) {
+			return strings.Trim(f[i+1], `"`)
+		}
+	}
+	return ""
+}

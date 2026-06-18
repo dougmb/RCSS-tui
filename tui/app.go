@@ -6,8 +6,11 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -37,6 +40,7 @@ const (
 	screenSettings
 	screenSchedule
 	screenLogs
+	screenAbout
 )
 
 // focus indicates which pane currently receives input.
@@ -49,8 +53,11 @@ const (
 
 // Model is the root Bubbletea model.
 type Model struct {
-	cfg config.Config
-	rc  *rclone.Client
+	// store holds every account; cfg is a copy of the active account, kept for
+	// the many screens that read a single Config.
+	store *config.Store
+	cfg   config.Config
+	rc    *rclone.Client
 
 	width, height int
 	detailW       int
@@ -61,6 +68,10 @@ type Model struct {
 	screen screen
 	locked bool
 
+	help          help.Model
+	showHelp      bool
+	rcloneMissing bool
+
 	menu     list.Model
 	account  accountModel
 	folder   folderModel
@@ -70,26 +81,35 @@ type Model struct {
 	settings settingsModel
 	schedule scheduleModel
 	logs     logsModel
+	about    aboutModel
 
 	saveErr  error
 	quitting bool
 }
 
-// New builds the root model with its dependencies and all sub-models.
-func New(cfg config.Config, rc *rclone.Client) Model {
+// New builds the root model with its dependencies and all sub-models. rclone's
+// absence is recorded (not fatal) so the UI still opens and can warn about the
+// missing dependency instead of refusing to start.
+func New(store *config.Store, rc *rclone.Client) Model {
+	cfg, _ := store.Active()
+	rcMissing := rc.EnsureInstalled() != nil
 	return Model{
-		cfg:      cfg,
-		rc:       rc,
-		focus:    focusSidebar,
-		screen:   screenAccount,
-		menu:     newMenu(),
-		account:  newAccountModel(rc, cfg.RemoteName),
-		backups:  newBackupsModel(cfg, rc),
-		upload:   newUploadModel(cfg, rc),
-		clean:    newCleanModel(cfg, rc),
-		settings: newSettingsModel(cfg),
-		schedule: newScheduleModel(cfg),
-		logs:     newLogsModel(cfg),
+		store:         store,
+		cfg:           cfg,
+		rc:            rc,
+		focus:         focusSidebar,
+		screen:        screenAccount,
+		help:          help.New(),
+		rcloneMissing: rcMissing,
+		menu:          newMenu(),
+		account:       newAccountModel(rc, cfg.RemoteName, store.Names()),
+		backups:       newBackupsModel(cfg, rc),
+		upload:        newUploadModel(cfg, rc),
+		clean:         newCleanModel(cfg, rc),
+		settings:      newSettingsModel(cfg),
+		schedule:      newScheduleModel(cfg),
+		logs:          newLogsModel(cfg),
+		about:         newAboutModel(cfg, rcMissing, len(store.Accounts)),
 	}
 }
 
@@ -121,7 +141,8 @@ func (m Model) contentW() int {
 // sub-model and the sidebar.
 func (m *Model) resizeDetail() {
 	w, h := m.contentW(), m.detailH
-	m.menu.SetSize(sidebarWidth-2, h)
+	// The sidebar reserves one row for the active-account badge above the menu.
+	m.menu.SetSize(sidebarWidth-2, h-1)
 	m.account.setSize(w, h)
 	m.backups.setSize(w, h)
 	m.upload.setHeight(h)
@@ -150,24 +171,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.detailH < 1 {
 			m.detailH = 1
 		}
+		m.help.Width = m.width
 		m.resizeDetail()
 		return m, nil
 
 	case settingsSavedMsg:
+		// Persist the edited account, then leave focus on the Settings screen so
+		// it can show a visible "Saved ✓" confirmation (the model already moved
+		// to its done state); the result is fed back for display.
 		m.cfg = msg.cfg
-		m.saveErr = config.Save(m.cfg)
-		m.focus = focusSidebar
+		m.store.Upsert(m.cfg)
+		m.saveErr = m.store.Save()
+		m.settings.saveErr = m.saveErr
+		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
 		return m, nil
 
 	case remoteChosenMsg:
-		m.cfg.RemoteName = msg.name
-		m.saveErr = config.Save(m.cfg)
+		// Switch the active account, creating its settings with defaults the
+		// first time a remote is chosen. Each account is fully isolated.
+		if !m.store.Has(msg.name) {
+			m.store.Upsert(config.NewAccount(msg.name))
+		}
+		m.store.SetActive(msg.name)
+		m.cfg, _ = m.store.Active()
+		m.saveErr = m.store.Save()
+		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
 		m.focus = focusSidebar
 		return m, nil
 
+	case accountForgetMsg:
+		// Forget an account's RCSS settings (the rclone remote is untouched).
+		m.store.Remove(msg.name)
+		m.cfg, _ = m.store.Active()
+		m.saveErr = m.store.Save()
+		m.account = newAccountModel(m.rc, m.cfg.RemoteName, m.store.Names())
+		m.account.setSize(m.contentW(), m.detailH)
+		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
+		return m, m.account.load()
+
 	case folderChosenMsg:
 		m.cfg.SyncRoot = msg.path
-		m.saveErr = config.Save(m.cfg)
+		m.store.Upsert(m.cfg)
+		m.saveErr = m.store.Save()
 		m.focus = focusSidebar
 		return m, nil
 
@@ -180,6 +225,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			m.quitting = true
 			return m, tea.Quit
+		}
+		// The help overlay captures input first: any of ?/esc/q closes it.
+		if m.showHelp {
+			switch msg.String() {
+			case "?", "esc", "q", "enter":
+				m.showHelp = false
+			}
+			return m, nil
+		}
+		if key.Matches(msg, keys.Help) && m.helpToggleAllowed() {
+			m.showHelp = true
+			return m, nil
 		}
 		if m.focus == focusSidebar {
 			return m.updateSidebar(msg)
@@ -198,11 +255,18 @@ func (m Model) updateSidebar(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.menu, cmd = m.menu.Update(msg)
 		return m, cmd
 	}
-	switch msg.String() {
-	case "q":
+	// Number keys 1–9 jump straight to a screen and open it.
+	if s := msg.String(); len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
+		if idx := int(s[0] - '1'); idx < len(m.menu.Items()) {
+			m.menu.Select(idx)
+			return m.activate()
+		}
+	}
+	switch {
+	case key.Matches(msg, keys.Quit):
 		m.quitting = true
 		return m, tea.Quit
-	case "enter", "right", "l", "tab":
+	case key.Matches(msg, keys.Open):
 		return m.activate()
 	}
 	var cmd tea.Cmd
@@ -219,7 +283,7 @@ func (m Model) activate() (tea.Model, tea.Cmd) {
 	}
 	m.screen = it.target
 	m.focus = focusDetail
-	if requiresRemote(it.target) && m.cfg.RemoteName == "" {
+	if m.locksScreen(it.target) {
 		m.locked = true
 		return m, nil
 	}
@@ -236,12 +300,49 @@ func requiresRemote(s screen) bool {
 	return false
 }
 
+// needsRclone reports whether a screen drives the rclone binary at all
+// (Account lists/configures remotes; the others read or write the cloud).
+func needsRclone(s screen) bool {
+	return s == screenAccount || requiresRemote(s)
+}
+
+// locksScreen reports whether a screen can't be opened in the current state:
+// when rclone itself is missing, every rclone-backed screen (Account included)
+// is locked; otherwise screens that need a remote stay locked until one is set.
+func (m Model) locksScreen(s screen) bool {
+	if m.rcloneMissing {
+		return needsRclone(s)
+	}
+	return requiresRemote(s) && m.cfg.RemoteName == ""
+}
+
+// helpToggleAllowed reports whether `?` should open the help overlay rather
+// than be treated as input. It is suppressed where `?` is a typeable character
+// (the huh forms) or while a list is capturing filter text.
+func (m Model) helpToggleAllowed() bool {
+	if m.focus == focusSidebar {
+		return m.menu.FilterState() != list.Filtering
+	}
+	switch m.screen {
+	case screenSettings:
+		return m.settings.done // a huh form while editing; free once saved
+	case screenSchedule:
+		return m.schedule.state == scDone
+	case screenAccount:
+		return m.account.list.FilterState() != list.Filtering
+	case screenBackups:
+		return !m.backups.filtering()
+	}
+	return true
+}
+
 // enterScreen (re)initializes the chosen screen and returns its load/init
 // command, so each entry starts fresh against the current config.
 func (m Model) enterScreen(s screen) (tea.Model, tea.Cmd) {
 	switch s {
 	case screenAccount:
-		m.account.current = m.cfg.RemoteName
+		m.account = newAccountModel(m.rc, m.cfg.RemoteName, m.store.Names())
+		m.account.setSize(m.contentW(), m.detailH)
 		return m, m.account.load()
 	case screenFolder:
 		m.folder = newFolderModel(m.folderStart())
@@ -256,11 +357,11 @@ func (m Model) enterScreen(s screen) (tea.Model, tea.Cmd) {
 		m.upload.setHeight(m.detailH)
 		return m, nil
 	case screenClean:
+		// Clean opens on an intro/options screen explaining what it deletes and
+		// exposing the Force toggle; the dry-run is launched from there.
 		m.clean = newCleanModel(m.cfg, m.rc)
 		m.clean.setHeight(m.detailH)
-		var cmd tea.Cmd
-		m.clean, cmd = m.clean.run(true)
-		return m, cmd
+		return m, nil
 	case screenSettings:
 		m.settings = newSettingsModel(m.cfg)
 		m.settings.setSize(m.contentW(), m.detailH)
@@ -273,6 +374,9 @@ func (m Model) enterScreen(s screen) (tea.Model, tea.Cmd) {
 		m.logs = newLogsModel(m.cfg)
 		m.logs.setSize(m.contentW(), m.detailH)
 		m.logs.reload()
+		return m, nil
+	case screenAbout:
+		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
 		return m, nil
 	}
 	return m, nil
@@ -298,6 +402,8 @@ func (m Model) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.schedule, cmd = m.schedule.Update(msg)
 	case screenLogs:
 		m.logs, cmd = m.logs.Update(msg)
+	case screenAbout:
+		m.about, cmd = m.about.Update(msg)
 	}
 	return m, cmd
 }
@@ -317,7 +423,7 @@ func (m Model) View() string {
 
 	sidebar := paneStyle(m.focus == focusSidebar).
 		Width(sidebarWidth).Height(m.detailH).
-		Render(m.menu.View())
+		Render(m.accountBadge() + "\n" + m.menu.View())
 
 	detail := paneStyle(m.focus == focusDetail).
 		Width(m.detailW).Height(m.detailH).
@@ -325,13 +431,30 @@ func (m Model) View() string {
 		Render(m.detailView())
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, detail)
-	footer := helpStyle.PaddingLeft(1).Render(m.footerText())
-	return row + "\n" + footer
+	return row + "\n" + m.footer()
+}
+
+// footer renders the bottom hint line: a keymap-driven short help while the
+// menu is focused, the close hint while the help overlay is open, or the active
+// screen's contextual hints in the detail pane.
+func (m Model) footer() string {
+	pad := lipgloss.NewStyle().PaddingLeft(1)
+	switch {
+	case m.showHelp:
+		return helpStyle.PaddingLeft(1).Render("? / esc close help")
+	case m.focus == focusSidebar:
+		return pad.Render(m.help.ShortHelpView(sidebarShortHelp()))
+	default:
+		return helpStyle.PaddingLeft(1).Render(m.detailFooter())
+	}
 }
 
 // detailView renders the right pane: a preview of the highlighted item when
 // the sidebar is focused, otherwise the active sub-model.
 func (m Model) detailView() string {
+	if m.showHelp {
+		return m.helpBody()
+	}
 	if m.focus == focusSidebar {
 		return m.previewView()
 	}
@@ -355,17 +478,33 @@ func (m Model) detailView() string {
 		return m.schedule.View()
 	case screenLogs:
 		return m.logs.View()
+	case screenAbout:
+		return m.about.View()
 	}
 	return ""
 }
 
-// viewLocked shows a warning when a screen requires a remote but none is configured.
+// helpBody renders the full keybinding reference shown by the `?` overlay,
+// generated from the central keymap so it never drifts from the real bindings.
+func (m Model) helpBody() string {
+	return titleStyle.Render("Keyboard shortcuts") + "\n\n" + m.help.FullHelpView(fullHelp())
+}
+
+// viewLocked shows a warning when a screen can't be opened: rclone is not
+// installed, or no remote is configured yet.
 func (m Model) viewLocked() string {
 	it, ok := m.menu.SelectedItem().(menuItem)
 	if !ok {
 		return ""
 	}
 	body := titleStyle.Render(it.title) + "\n\n"
+	if m.rcloneMissing {
+		body += warnStyle.Render("rclone is not installed.")
+		body += "\n\n"
+		body += subtitleStyle.Render("RCSS drives the rclone binary, which was not found on your PATH.\n" +
+			"Install it from https://rclone.org/install/ and restart RCSS.")
+		return body
+	}
 	body += warnStyle.Render("No rclone account configured.")
 	body += "\n\n"
 	body += subtitleStyle.Render("Please configure an account first (Account → select or add a remote).")
@@ -381,9 +520,15 @@ func (m Model) previewView() string {
 	}
 	body := titleStyle.Render(it.title) + "\n\n" + subtitleStyle.Render(it.desc)
 
+	if m.rcloneMissing {
+		body += "\n\n" + warnStyle.Render("⚠ rclone not found on PATH — install it from") +
+			"\n" + warnStyle.Render("  https://rclone.org/install/ to enable cloud features.")
+	}
+
 	switch it.target {
 	case screenAccount:
-		body += "\n\n" + infoLine("Current remote", m.cfg.RemoteName)
+		body += "\n\n" + infoLine("Active account", m.cfg.RemoteName) +
+			"\n" + infoLine("Accounts configured", fmt.Sprintf("%d", len(m.store.Accounts)))
 	case screenFolder:
 		body += "\n\n" + infoLine("Sync folder", m.cfg.SyncRoot)
 	case screenUpload, screenClean, screenBackups:
@@ -406,45 +551,59 @@ func infoLine(label, value string) string {
 	return subtitleStyle.Render(label+": ") + value
 }
 
-// footerText returns the key hints for the focused pane.
-func (m Model) footerText() string {
-	if m.focus == focusSidebar {
-		return "↑/↓ move • enter/→ open • / filter • q quit"
+// accountBadge renders the active-account indicator shown atop the sidebar,
+// truncated to the sidebar width.
+func (m Model) accountBadge() string {
+	if m.cfg.RemoteName == "" {
+		return warnStyle.Render("▸ no account")
 	}
-	return m.detailFooter()
+	label := "▸ " + m.cfg.RemoteName
+	if r := []rune(label); len(r) > sidebarWidth-2 {
+		label = string(r[:sidebarWidth-3]) + "…"
+	}
+	return titleStyle.Render(label)
 }
 
-// detailFooter returns the key hints for the active detail screen.
+// detailFooter returns the key hints for the active detail screen, appending a
+// "? help" hint on screens where the overlay is available.
 func (m Model) detailFooter() string {
 	if m.locked {
 		return "esc back"
 	}
+	var hint string
 	switch m.screen {
 	case screenAccount:
-		return "↑/↓ move • enter select • r refresh • / filter • esc back"
+		hint = "↑/↓ move • enter switch • d forget • r refresh • / filter • esc back"
 	case screenFolder:
-		return "↑/↓ move • →/l open • ←/h up • enter select dir • esc back"
+		hint = "↑/↓ move • →/l open • ←/h up • enter select dir • esc back"
 	case screenBackups:
-		return m.backups.footerHint()
+		hint = m.backups.footerHint()
 	case screenUpload:
-		return m.upload.footerHint()
+		hint = m.upload.footerHint()
 	case screenClean:
-		return m.clean.footerHint()
+		hint = m.clean.footerHint()
 	case screenSettings:
-		return "tab/↑↓ navigate • enter next • esc cancel"
+		hint = m.settings.footerHint()
 	case screenSchedule:
-		return m.schedule.footerHint()
+		hint = m.schedule.footerHint()
 	case screenLogs:
-		return "↑/↓ scroll • r reload • esc back"
+		hint = "↑/↓ scroll • r reload • esc back"
+	case screenAbout:
+		hint = "esc back • q quit"
+	default:
+		hint = "esc back • q quit"
 	}
-	return "esc back • q quit"
+	if m.helpToggleAllowed() {
+		hint += " • ? help"
+	}
+	return hint
 }
 
 // Run loads the dependencies into the root model and starts the program in the
 // alternate screen buffer. It is the entry point used by `rcss` with no
 // subcommand.
-func Run(cfg config.Config, rc *rclone.Client) error {
-	p := tea.NewProgram(New(cfg, rc), tea.WithAltScreen())
+func Run(store *config.Store, rc *rclone.Client) error {
+	p := tea.NewProgram(New(store, rc), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

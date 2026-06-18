@@ -10,12 +10,13 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/dougmb/rcss-tui/config"
-	"github.com/dougmb/rcss-tui/cron"
+	"github.com/dougmb/rcss-tui/scheduler"
 )
 
-// Schedule screen: presets that write a managed block to the user's crontab
-// (no root) calling the rcss binary headless — `rcss upload` daily and/or
-// `rcss clean` weekly. Disabling both removes the block.
+// Schedule screen: presets that register RCSS jobs with the host OS scheduler
+// (crontab on Unix, Task Scheduler on Windows; no root/admin) calling the rcss
+// binary headless — `rcss upload` daily and/or `rcss clean` weekly. Disabling
+// both removes the managed jobs.
 
 type scheduleState int
 
@@ -36,7 +37,7 @@ type scheduleModel struct {
 	state   scheduleState
 	status  string
 	failed  bool
-	current []string
+	current []scheduler.Job
 }
 
 // parseHHMM validates and splits a "HH:MM" time.
@@ -59,7 +60,7 @@ func parseHHMM(s string) (hour, min int, err error) {
 func validTime(s string) error { _, _, err := parseHHMM(s); return err }
 
 func newScheduleModel(cfg config.Config) scheduleModel {
-	current, _ := cron.ManagedLines()
+	current, _ := scheduler.Current(cfg.RemoteName)
 	s := scheduleModel{
 		cfg:        cfg,
 		uploadTime: "03:00",
@@ -88,7 +89,7 @@ func (s *scheduleModel) setSize(w, h int) {
 	s.form = s.form.WithWidth(w).WithHeight(h - 4)
 }
 
-// apply writes the crontab block from the chosen presets.
+// apply registers the chosen presets with the OS scheduler.
 func (s scheduleModel) apply() error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -99,16 +100,16 @@ func (s scheduleModel) apply() error {
 		return err
 	}
 
-	var lines []string
+	var jobs []scheduler.Job
 	if s.uploadEnabled {
 		h, m, _ := parseHHMM(s.uploadTime)
-		lines = append(lines, fmt.Sprintf("%d %d * * * %s upload >> %s 2>&1", m, h, exe, logPath))
+		jobs = append(jobs, scheduler.Job{Kind: scheduler.Upload, Hour: h, Min: m})
 	}
 	if s.cleanEnabled {
 		h, m, _ := parseHHMM(s.cleanTime)
-		lines = append(lines, fmt.Sprintf("%d %d * * 0 %s clean >> %s 2>&1", m, h, exe, logPath))
+		jobs = append(jobs, scheduler.Job{Kind: scheduler.Clean, Hour: h, Min: m, Weekly: true})
 	}
-	return cron.SetManaged(lines)
+	return scheduler.Apply(s.cfg.RemoteName, jobs, exe, logPath)
 }
 
 func (s scheduleModel) Update(msg tea.Msg) (scheduleModel, tea.Cmd) {
@@ -132,13 +133,13 @@ func (s scheduleModel) Update(msg tea.Msg) (scheduleModel, tea.Cmd) {
 	switch s.form.State {
 	case huh.StateCompleted:
 		if err := s.apply(); err != nil {
-			s.status, s.failed = "Failed to update crontab: "+err.Error(), true
+			s.status, s.failed = fmt.Sprintf("Failed to update %s: %s", scheduler.Backend(), err.Error()), true
 		} else if !s.uploadEnabled && !s.cleanEnabled {
-			s.status, s.failed = "Schedule cleared — RCSS crontab block removed.", false
+			s.status, s.failed = "Schedule cleared — RCSS jobs removed.", false
 		} else {
-			s.status, s.failed = "Crontab updated.", false
+			s.status, s.failed = scheduler.Backend()+" updated.", false
 		}
-		s.current, _ = cron.ManagedLines()
+		s.current, _ = scheduler.Current(s.cfg.RemoteName)
 		s.state = scDone
 		return s, nil
 	case huh.StateAborted:
@@ -156,12 +157,12 @@ func (s scheduleModel) View() string {
 			b.WriteString(titleStyle.Render("✓ " + s.status))
 		}
 		b.WriteString("\n\n")
-		b.WriteString(subtitleStyle.Render(currentScheduleText(s.current)))
+		b.WriteString(subtitleStyle.Render(s.currentScheduleText()))
 		return b.String()
 	}
 
 	header := titleStyle.Render("Schedule") + "\n" +
-		subtitleStyle.Render(currentScheduleText(s.current)) + "\n\n"
+		subtitleStyle.Render(s.currentScheduleText()) + "\n\n"
 	return header + s.form.View()
 }
 
@@ -172,10 +173,15 @@ func (s scheduleModel) footerHint() string {
 	return "tab/↑↓ navigate • enter confirm • esc cancel"
 }
 
-// currentScheduleText summarizes the active managed crontab lines.
-func currentScheduleText(lines []string) string {
-	if len(lines) == 0 {
-		return "Current: no RCSS cron jobs scheduled."
+// currentScheduleText summarizes the active account's managed jobs.
+func (s scheduleModel) currentScheduleText() string {
+	if len(s.current) == 0 {
+		return fmt.Sprintf("Current: no jobs scheduled for %s (%s).", s.cfg.RemoteName, scheduler.Backend())
 	}
-	return "Current managed crontab:\n" + strings.Join(lines, "\n")
+	var b strings.Builder
+	fmt.Fprintf(&b, "Scheduled for %s (%s):", s.cfg.RemoteName, scheduler.Backend())
+	for _, j := range s.current {
+		fmt.Fprintf(&b, "\n  • %s — %s at %s", j.Kind.Title(), j.Cadence(), j.Time())
+	}
+	return b.String()
 }

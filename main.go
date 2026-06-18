@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -52,15 +53,16 @@ func usage(w *os.File) {
 
 Usage:
   rcss                 open the terminal UI
-  rcss upload [-v] [-p]
-  rcss clean  [-v] [--dry-run] [--force]
+  rcss upload [-v] [-p] [--account NAME]
+  rcss clean  [-v] [--dry-run] [--force] [--account NAME]
   rcss help
 
 Flags:
-  -v            verbose output
-  -p            show rclone transfer progress (upload)
-  --dry-run     preview deletions without removing anything (clean)
-  --force       bypass the safety lock (clean) — dangerous
+  -v             verbose output
+  -p             show rclone transfer progress (upload)
+  --dry-run      preview deletions without removing anything (clean)
+  --force        bypass the safety lock (clean) — dangerous
+  --account NAME run for this account (rclone remote); defaults to the active one
 `)
 }
 
@@ -70,12 +72,20 @@ func newContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
-// setup loads config, verifies rclone is installed, and builds a logger that
-// writes to the sync log and echoes every line to stdout (for cron logs).
-func setup(verbose bool) (config.Config, *rclone.Client, *backup.Logger, error) {
-	cfg, err := config.Load()
+// setup loads the chosen account, verifies rclone is installed, and builds a
+// logger that writes to the account's sync log and echoes every line to stdout
+// (for cron logs). When account is empty the active account is used.
+func setup(verbose bool, account string) (config.Config, *rclone.Client, *backup.Logger, error) {
+	store, err := config.LoadStore()
 	if err != nil {
-		return cfg, nil, nil, err
+		return config.Config{}, nil, nil, err
+	}
+	cfg, ok := pickAccount(store, account)
+	if !ok {
+		if account != "" {
+			return config.Config{}, nil, nil, fmt.Errorf("account %q not found", account)
+		}
+		return config.Config{}, nil, nil, errors.New("no account configured; run the TUI to add one")
 	}
 
 	rc := rclone.New()
@@ -94,13 +104,22 @@ func setup(verbose bool) (config.Config, *rclone.Client, *backup.Logger, error) 
 	return cfg, rc, log, nil
 }
 
+// pickAccount selects the named account, or the active one when name is empty.
+func pickAccount(store *config.Store, name string) (config.Config, bool) {
+	if name != "" {
+		return store.Get(name)
+	}
+	return store.Active()
+}
+
 func runUpload(argv []string) int {
 	fs := flag.NewFlagSet("upload", flag.ExitOnError)
 	verbose := fs.Bool("v", false, "verbose output")
 	progress := fs.Bool("p", false, "show rclone transfer progress")
+	account := fs.String("account", "", "account (rclone remote) to run; defaults to active")
 	_ = fs.Parse(argv)
 
-	cfg, rc, log, err := setup(*verbose)
+	cfg, rc, log, err := setup(*verbose, *account)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "rcss:", err)
 		return 1
@@ -121,9 +140,10 @@ func runClean(argv []string) int {
 	verbose := fs.Bool("v", false, "verbose output")
 	dryRun := fs.Bool("dry-run", false, "preview deletions without removing anything")
 	force := fs.Bool("force", false, "bypass the safety lock (dangerous)")
+	account := fs.String("account", "", "account (rclone remote) to run; defaults to active")
 	_ = fs.Parse(argv)
 
-	cfg, rc, log, err := setup(*verbose)
+	cfg, rc, log, err := setup(*verbose, *account)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "rcss:", err)
 		return 1
@@ -140,14 +160,14 @@ func runClean(argv []string) int {
 }
 
 // runTUI loads the config and rclone client, then launches the terminal UI.
+// Unlike the headless subcommands, a missing rclone binary is NOT fatal here:
+// the UI still opens and warns about the dependency (so the user can review
+// settings/logs and find install instructions) instead of refusing to start.
 func runTUI() error {
-	cfg, err := config.Load()
+	store, err := config.LoadStore()
 	if err != nil {
 		return err
 	}
 	rc := rclone.New()
-	if err := rc.EnsureInstalled(); err != nil {
-		return err
-	}
-	return tui.Run(cfg, rc)
+	return tui.Run(store, rc)
 }

@@ -107,6 +107,13 @@ func (b *backupsModel) setSize(w, h int) {
 	b.files.SetSize(w, h)
 }
 
+// filtering reports whether either list is currently capturing filter text, so
+// the root can avoid treating `/` or `?` as a global shortcut.
+func (b backupsModel) filtering() bool {
+	return b.projects.FilterState() == list.Filtering ||
+		b.files.FilterState() == list.Filtering
+}
+
 // loadProjects lists the remote top-level entries (project folders and loose
 // files).
 func (b backupsModel) loadProjects() tea.Cmd {

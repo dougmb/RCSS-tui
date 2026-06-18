@@ -25,6 +25,12 @@ type settingsModel struct {
 	retention, remoteRetention, safetyDays string
 	deleteAfter, skipDotfiles              bool
 	ignored, logFile                       string
+
+	// done flips to true once the form is submitted, so the screen shows a
+	// "Saved ✓" confirmation instead of silently returning to the menu. saveErr
+	// is set by the root after it persists the config.
+	done    bool
+	saveErr error
 }
 
 // numeric validates that a huh input holds a non-negative integer.
@@ -50,10 +56,11 @@ func newSettingsModel(cfg config.Config) settingsModel {
 		logFile:         cfg.LogFile,
 	}
 
+	// The account's rclone remote is chosen on the Account screen, not here, so
+	// these settings stay scoped to the active account (s.remoteName is kept and
+	// re-applied in toConfig).
 	s.form = huh.NewForm(
 		huh.NewGroup(
-			huh.NewInput().Key("remote").Title("Remote name").
-				Description("rclone remote, e.g. drive:").Value(&s.remoteName),
 			huh.NewInput().Key("root").Title("Sync root").
 				Description("Local folder holding the projects").Value(&s.syncRoot),
 			huh.NewInput().Key("dest").Title("Drive destination").Value(&s.driveDest),
@@ -104,6 +111,19 @@ func (s settingsModel) toConfig() config.Config {
 }
 
 func (s settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
+	// Once saved, the screen is a confirmation; any key returns to the menu.
+	if s.done {
+		if key, ok := msg.(tea.KeyMsg); ok {
+			switch key.String() {
+			case "q":
+				return s, tea.Quit
+			case "enter", "esc", "backspace":
+				return s, func() tea.Msg { return goBackMsg{} }
+			}
+		}
+		return s, nil
+	}
+
 	form, cmd := s.form.Update(msg)
 	if f, ok := form.(*huh.Form); ok {
 		s.form = f
@@ -111,6 +131,7 @@ func (s settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 
 	switch s.form.State {
 	case huh.StateCompleted:
+		s.done = true
 		cfg := s.toConfig()
 		return s, func() tea.Msg { return settingsSavedMsg{cfg: cfg} }
 	case huh.StateAborted:
@@ -119,4 +140,30 @@ func (s settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 	return s, cmd
 }
 
-func (s settingsModel) View() string { return s.form.View() }
+func (s settingsModel) View() string {
+	if !s.done {
+		return s.form.View()
+	}
+	if s.saveErr != nil {
+		return errorStyle.Render("✗ Could not save settings") + "\n\n" +
+			subtitleStyle.Render(s.saveErr.Error())
+	}
+	cfg := s.toConfig()
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("✓ Settings saved"))
+	b.WriteString("\n\n")
+	b.WriteString(infoLine("Remote", cfg.RemoteName) + "\n")
+	b.WriteString(infoLine("Sync root", cfg.SyncRoot) + "\n")
+	b.WriteString(infoLine("Destination", cfg.DriveDestination) + "\n")
+	b.WriteString(subtitleStyle.Render(fmt.Sprintf("Retention: %dd local • %dd remote • %dd safety",
+		cfg.RetentionDays, cfg.RemoteRetentionDays, cfg.RemoteCleanupSafetyDays)))
+	return b.String()
+}
+
+// footerHint returns the key hints for the current settings state.
+func (s settingsModel) footerHint() string {
+	if s.done {
+		return "enter/esc back • q quit"
+	}
+	return "tab/↑↓ navigate • enter next • esc cancel"
+}

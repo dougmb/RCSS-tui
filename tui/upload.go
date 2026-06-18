@@ -113,7 +113,9 @@ func (u uploadModel) View() string {
 	switch u.state {
 	case upIdle:
 		var b strings.Builder
-		b.WriteString(titleStyle.Render("Upload"))
+		b.WriteString(titleStyle.Render("Back Up Now"))
+		b.WriteString("\n\n")
+		b.WriteString(subtitleStyle.Render("Copies each project sub-folder to the cloud (one-way upload)."))
 		b.WriteString("\n\n")
 		b.WriteString(subtitleStyle.Render("Root:   " + u.cfg.SyncRoot))
 		b.WriteString("\n")
@@ -122,13 +124,13 @@ func (u uploadModel) View() string {
 		b.WriteString("Press enter to start the backup.")
 		return b.String()
 	case upRunning:
-		return outputView(u.spinner.View()+" Uploading…", u.output, u.height)
+		return outputView(u.spinner.View()+" Backing up…", u.output, u.height)
 	case upDone:
-		heading := titleStyle.Render(fmt.Sprintf("✓ Upload %s in %s — %d removed, %d errors",
+		heading := titleStyle.Render(fmt.Sprintf("✓ Backup %s in %s — %d removed, %d errors",
 			u.result.Status, u.result.Duration.Round(1e9), u.result.FilesDeleted, u.result.UploadErrors))
 		return outputView(heading, u.output, u.height)
 	case upError:
-		return outputView(errorStyle.Render("✗ Upload failed: "+u.err.Error()), u.output, u.height)
+		return outputView(errorStyle.Render("✗ Backup failed: "+u.err.Error()), u.output, u.height)
 	}
 	return ""
 }
@@ -138,7 +140,7 @@ func (u uploadModel) footerHint() string {
 	case upIdle:
 		return "enter start • esc back • q quit"
 	case upRunning:
-		return "uploading… • q quit"
+		return "backing up… • q quit"
 	default:
 		return "enter/esc back • q quit"
 	}

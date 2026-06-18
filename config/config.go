@@ -3,6 +3,10 @@
 // (~/.config/rcss/config.toml). It replaces the legacy backup.env used by the
 // original Bash scripts; no secrets live here (rclone keeps credentials in its
 // own config) — only paths, the remote name, and retention settings.
+//
+// RCSS supports multiple isolated accounts, one per rclone remote. A Store
+// holds every account plus the name of the active one; each account is a Config
+// with its own folders, retention, and log. The remote name is the account key.
 package config
 
 import (
@@ -10,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -20,11 +25,13 @@ const AppDir = "rcss"
 // FileName is the TOML config file name within AppDir.
 const FileName = "config.toml"
 
-// Config mirrors the settings the original scripts read from backup.env, with
-// one combined source of truth. Field order matches how it is written to disk.
+// Config holds the settings for a single account (one rclone remote). Every
+// account is fully isolated: its own sync root, destination, retention, ignored
+// folders, and log file. RemoteName is the account key.
 type Config struct {
 	// RemoteName is the rclone remote as configured via `rclone config`,
-	// including the trailing colon (e.g. "drive:" or "douglas:").
+	// including the trailing colon (e.g. "drive:" or "douglas:"). It is the
+	// account's unique key.
 	RemoteName string `toml:"remote_name"`
 	// SyncRoot is the local directory whose sub-folders are the projects.
 	SyncRoot string `toml:"sync_root"`
@@ -52,9 +59,17 @@ type Config struct {
 	// IgnoredFolders are sub-folders of SyncRoot never treated as projects.
 	IgnoredFolders []string `toml:"ignored_folders"`
 
-	// LogFile is the path to the append-only sync log. Empty means a default
-	// location is used (see ResolveLogFile).
+	// LogFile is the path to the append-only sync log. Empty means a per-account
+	// default location is used (see ResolveLogFile).
 	LogFile string `toml:"log_file"`
+}
+
+// Store is the on-disk model: every isolated account plus the active one.
+type Store struct {
+	// ActiveAccount is the RemoteName of the account commands act on by default.
+	ActiveAccount string `toml:"active_account"`
+	// Accounts holds one Config per account, keyed by its RemoteName.
+	Accounts []Config `toml:"accounts"`
 }
 
 // Default returns a Config populated with the recommended defaults: 1 day of
@@ -62,16 +77,87 @@ type Config struct {
 // delete-after-upload and skip-dotfiles disabled.
 func Default() Config {
 	return Config{
-		RemoteName:              "",
-		SyncRoot:                "",
 		DriveDestination:        "Backups",
 		RetentionDays:           1,
 		RemoteRetentionDays:     15,
 		RemoteCleanupSafetyDays: 2,
-		DeleteAfterUpload:       false,
-		SkipDotfiles:            false,
 		IgnoredFolders:          []string{"scripts", "config", "bin", "logs", "lost+found"},
-		LogFile:                 "",
+	}
+}
+
+// NewAccount returns the recommended defaults for a freshly added account on the
+// given rclone remote.
+func NewAccount(remote string) Config {
+	c := Default()
+	c.RemoteName = remote
+	return c
+}
+
+// --- Store operations ---
+
+// Names returns the configured account names (RemoteName of each account).
+func (s *Store) Names() []string {
+	out := make([]string, 0, len(s.Accounts))
+	for _, a := range s.Accounts {
+		out = append(out, a.RemoteName)
+	}
+	return out
+}
+
+// Get returns the account with the given name.
+func (s *Store) Get(name string) (Config, bool) {
+	for _, a := range s.Accounts {
+		if a.RemoteName == name {
+			return a, true
+		}
+	}
+	return Config{}, false
+}
+
+// Has reports whether an account exists for the given remote.
+func (s *Store) Has(name string) bool {
+	_, ok := s.Get(name)
+	return ok
+}
+
+// Active returns the active account, or false when none is set.
+func (s *Store) Active() (Config, bool) {
+	if s.ActiveAccount == "" {
+		return Config{}, false
+	}
+	return s.Get(s.ActiveAccount)
+}
+
+// Upsert adds or replaces an account, keyed by its RemoteName.
+func (s *Store) Upsert(c Config) {
+	for i, a := range s.Accounts {
+		if a.RemoteName == c.RemoteName {
+			s.Accounts[i] = c
+			return
+		}
+	}
+	s.Accounts = append(s.Accounts, c)
+}
+
+// SetActive marks an account active by name.
+func (s *Store) SetActive(name string) { s.ActiveAccount = name }
+
+// Remove deletes an account's stored settings (the rclone remote itself is
+// untouched). If it was active, the active account falls back to the first
+// remaining one, or none.
+func (s *Store) Remove(name string) {
+	kept := s.Accounts[:0]
+	for _, a := range s.Accounts {
+		if a.RemoteName != name {
+			kept = append(kept, a)
+		}
+	}
+	s.Accounts = kept
+	if s.ActiveAccount == name {
+		s.ActiveAccount = ""
+		if len(s.Accounts) > 0 {
+			s.ActiveAccount = s.Accounts[0].RemoteName
+		}
 	}
 }
 
@@ -94,8 +180,28 @@ func Path() (string, error) {
 	return filepath.Join(dir, FileName), nil
 }
 
+// sanitizeName maps an account name to a filesystem/scheduler-safe token,
+// e.g. "drive:" → "drive". Used for per-account default log file names.
+func sanitizeName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "default"
+	}
+	return out
+}
+
 // ResolveLogFile returns the effective sync-log path: c.LogFile if set,
-// otherwise sync.log inside the config dir.
+// otherwise a per-account file inside the config dir (sync-<account>.log), so
+// each account keeps an isolated log.
 func (c Config) ResolveLogFile() (string, error) {
 	if c.LogFile != "" {
 		return c.LogFile, nil
@@ -104,37 +210,55 @@ func (c Config) ResolveLogFile() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "sync.log"), nil
+	name := "sync.log"
+	if c.RemoteName != "" {
+		name = "sync-" + sanitizeName(c.RemoteName) + ".log"
+	}
+	return filepath.Join(dir, name), nil
 }
 
-// Load reads the config from its default path. On first run (file missing) it
-// writes the recommended defaults to disk and returns them, so callers always
-// get a usable Config.
-func Load() (Config, error) {
+// LoadStore reads the multi-account store from its default path. On first run
+// (file missing) it writes an empty store. A legacy single-account config (flat
+// TOML from older RCSS versions) is migrated into one account on load.
+func LoadStore() (*Store, error) {
 	path, err := Path()
 	if err != nil {
-		return Config{}, err
+		return nil, err
 	}
 
-	cfg := Default()
-	meta, err := toml.DecodeFile(path, &cfg)
+	var st Store
+	_, err = toml.DecodeFile(path, &st)
 	if errors.Is(err, os.ErrNotExist) {
-		cfg = Default()
-		if err := Save(cfg); err != nil {
-			return Config{}, fmt.Errorf("writing initial config: %w", err)
+		st = Store{}
+		if err := st.Save(); err != nil {
+			return nil, fmt.Errorf("writing initial config: %w", err)
 		}
-		return cfg, nil
+		return &st, nil
 	}
 	if err != nil {
-		return Config{}, fmt.Errorf("reading %s: %w", path, err)
+		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-	_ = meta
-	return cfg, nil
+
+	// Migrate a legacy flat config (no [[accounts]] table) into one account.
+	if len(st.Accounts) == 0 {
+		var legacy Config
+		if _, lerr := toml.DecodeFile(path, &legacy); lerr == nil && legacy.RemoteName != "" {
+			st.Accounts = []Config{legacy}
+			st.ActiveAccount = legacy.RemoteName
+			_ = st.Save()
+		}
+	}
+
+	// Ensure the active pointer is valid.
+	if _, ok := st.Active(); !ok && len(st.Accounts) > 0 {
+		st.ActiveAccount = st.Accounts[0].RemoteName
+	}
+	return &st, nil
 }
 
-// Save writes the config as TOML to its default path, creating the config
+// Save writes the store as TOML to its default path, creating the config
 // directory if needed.
-func Save(c Config) error {
+func (s *Store) Save() error {
 	dir, err := Dir()
 	if err != nil {
 		return err
@@ -150,7 +274,7 @@ func Save(c Config) error {
 	}
 	defer f.Close()
 
-	if err := toml.NewEncoder(f).Encode(c); err != nil {
+	if err := toml.NewEncoder(f).Encode(s); err != nil {
 		return fmt.Errorf("encoding config: %w", err)
 	}
 	return nil
