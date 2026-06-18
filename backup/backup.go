@@ -20,7 +20,7 @@ import (
 // "${RCLONE_REMOTE}/${DRIVE_DESTINATION}" concatenation (the remote name keeps
 // its trailing colon).
 func remoteDest(cfg config.Config) string {
-	return joinRemote(cfg.RemoteName, cfg.DriveDestination)
+	return joinRemote(cfg.RemoteName, cfg.RemoteDestination)
 }
 
 // joinRemote joins remote path segments with single slashes, trimming any

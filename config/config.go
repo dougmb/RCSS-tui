@@ -33,11 +33,11 @@ type Config struct {
 	// including the trailing colon (e.g. "drive:" or "douglas:"). It is the
 	// account's unique key.
 	RemoteName string `toml:"remote_name"`
-	// SyncRoot is the local directory whose sub-folders are the projects.
-	SyncRoot string `toml:"sync_root"`
-	// DriveDestination is the destination folder on the remote; backups live
-	// at <RemoteName>/<DriveDestination>/<project>/.
-	DriveDestination string `toml:"drive_destination"`
+	// SourceRoot is the local directory whose sub-folders are the projects.
+	SourceRoot string `toml:"source_root"`
+	// RemoteDestination is the destination folder on the remote; backups live
+	// at <RemoteName>/<RemoteDestination>/<project>/.
+	RemoteDestination string `toml:"remote_destination"`
 
 	// RetentionDays controls deletion of LOCAL files after a successful
 	// upload (files older than this are removed). Ignored when
@@ -56,10 +56,10 @@ type Config struct {
 	// SkipDotfiles excludes hidden files/folders (starting with ".") from
 	// uploads, protecting files like .env, .git/, .ssh/.
 	SkipDotfiles bool `toml:"skip_dotfiles"`
-	// IgnoredFolders are sub-folders of SyncRoot never treated as projects.
+	// IgnoredFolders are sub-folders of SourceRoot never treated as projects.
 	IgnoredFolders []string `toml:"ignored_folders"`
 
-	// LogFile is the path to the append-only sync log. Empty means a per-account
+	// LogFile is the path to the append-only backup log. Empty means a per-account
 	// default location is used (see ResolveLogFile).
 	LogFile string `toml:"log_file"`
 }
@@ -77,7 +77,7 @@ type Store struct {
 // delete-after-upload and skip-dotfiles disabled.
 func Default() Config {
 	return Config{
-		DriveDestination:        "Backups",
+		RemoteDestination:       "Backups",
 		RetentionDays:           1,
 		RemoteRetentionDays:     15,
 		RemoteCleanupSafetyDays: 2,
@@ -199,8 +199,8 @@ func sanitizeName(s string) string {
 	return out
 }
 
-// ResolveLogFile returns the effective sync-log path: c.LogFile if set,
-// otherwise a per-account file inside the config dir (sync-<account>.log), so
+// ResolveLogFile returns the effective backup-log path: c.LogFile if set,
+// otherwise a per-account file inside the config dir (backup-<account>.log), so
 // each account keeps an isolated log.
 func (c Config) ResolveLogFile() (string, error) {
 	if c.LogFile != "" {
@@ -210,9 +210,9 @@ func (c Config) ResolveLogFile() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	name := "sync.log"
+	name := "backup.log"
 	if c.RemoteName != "" {
-		name = "sync-" + sanitizeName(c.RemoteName) + ".log"
+		name = "backup-" + sanitizeName(c.RemoteName) + ".log"
 	}
 	return filepath.Join(dir, name), nil
 }
@@ -288,11 +288,11 @@ func (c Config) Validate() error {
 	if c.RemoteName == "" {
 		missing = append(missing, "remote_name")
 	}
-	if c.SyncRoot == "" {
-		missing = append(missing, "sync_root")
+	if c.SourceRoot == "" {
+		missing = append(missing, "source_root")
 	}
-	if c.DriveDestination == "" {
-		missing = append(missing, "drive_destination")
+	if c.RemoteDestination == "" {
+		missing = append(missing, "remote_destination")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config incomplete: %v not set", missing)

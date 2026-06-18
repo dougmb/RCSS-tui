@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/dougmb/rcss-tui/backup"
 	"github.com/dougmb/rcss-tui/config"
 	"github.com/dougmb/rcss-tui/scheduler"
 )
@@ -53,6 +54,10 @@ func (a aboutModel) View() string {
 	b.WriteString("\n")
 	b.WriteString(infoLine("Accounts", fmt.Sprintf("%d", a.accountCount)))
 	b.WriteString("\n")
+	if a.cfg.RemoteName != "" {
+		b.WriteString(lastBackupLine(a.cfg))
+		b.WriteString("\n")
+	}
 
 	if a.rcloneMissing {
 		b.WriteString(infoLine("rclone", "") + warnStyle.Render("not found on PATH"))
@@ -78,4 +83,24 @@ func (a aboutModel) View() string {
 	b.WriteString(infoLine("rclone", "https://rclone.org"))
 
 	return b.String()
+}
+
+// lastBackupLine renders an info line summarizing the most recent backup run
+// recorded in the account's log: the timestamp plus a colored SUCCESS/PARTIAL
+// tag, or "never" when no run has been recorded yet.
+func lastBackupLine(cfg config.Config) string {
+	logPath, err := cfg.ResolveLogFile()
+	if err != nil {
+		return infoLine("Last backup", "unknown")
+	}
+	info, ok, err := backup.LastRun(logPath)
+	if err != nil || !ok {
+		return infoLine("Last backup", "never")
+	}
+	line := infoLine("Last backup", info.Time.Format("2006-01-02 15:04"))
+	tag := "(" + info.Status + ")"
+	if info.Status == "SUCCESS" {
+		return line + "  " + okStyle.Render(tag)
+	}
+	return line + "  " + warnStyle.Render(tag)
 }

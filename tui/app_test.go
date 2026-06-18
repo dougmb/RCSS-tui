@@ -125,7 +125,7 @@ func TestAboutReachableAndRenders(t *testing.T) {
 // TestCleanForceDoubleConfirm checks the Force toggle and that executing a
 // forced deletion requires the extra confirmation step (and can be cancelled).
 func TestCleanForceDoubleConfirm(t *testing.T) {
-	cfg := config.Config{RemoteName: "r:", DriveDestination: "Backups", RemoteRetentionDays: 15, RemoteCleanupSafetyDays: 2}
+	cfg := config.Config{RemoteName: "r:", RemoteDestination: "Backups", RemoteRetentionDays: 15, RemoteCleanupSafetyDays: 2}
 	c := newCleanModel(cfg, missingRclone())
 	if c.state != clIntro {
 		t.Fatalf("expected clIntro, got %v", c.state)
@@ -153,7 +153,7 @@ func TestCleanForceDoubleConfirm(t *testing.T) {
 // TestSettingsSavedConfirmation checks the done state renders a visible
 // confirmation (success and error paths).
 func TestSettingsSavedConfirmation(t *testing.T) {
-	s := newSettingsModel(config.Config{RemoteName: "r:", SyncRoot: "/tmp", DriveDestination: "Backups"})
+	s := newSettingsModel(config.Config{RemoteName: "r:", SourceRoot: "/tmp", RemoteDestination: "Backups"})
 	s.done = true
 	if got := s.View(); !strings.Contains(got, "Settings saved") {
 		t.Errorf("expected saved confirmation, got:\n%s", got)

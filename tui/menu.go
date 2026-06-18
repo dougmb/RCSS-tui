@@ -22,9 +22,9 @@ func (i menuItem) FilterValue() string { return i.title }
 // detail pane preview instead.
 func newMenu() list.Model {
 	items := []list.Item{
-		menuItem{"Account", "Select or configure an rclone remote (e.g. Google Drive).", screenAccount},
-		menuItem{"Sync folder", "Choose the local directory whose sub-folders are synced to the cloud.", screenFolder},
-		menuItem{"Backups", "Browse cloud backups by project and restore individual files.", screenBackups},
+		menuItem{"Rclone Account", "Select or configure an rclone remote (e.g. Google Drive).", screenAccount},
+		menuItem{"Backup source", "Choose the local directory whose sub-folders are backed up to the cloud.", screenFolder},
+		menuItem{"Restore", "Browse cloud backups by project and restore individual files.", screenBackups},
 		menuItem{"Back Up Now", "Copy all projects to the cloud now (one-way upload), with live progress.", screenUpload},
 		menuItem{"Clean", "Remove old CLOUD backups beyond retention, with a dry-run preview and safety lock.", screenClean},
 		menuItem{"Settings", "Configure retention days, dotfiles, ignored folders and behavior.", screenSettings},

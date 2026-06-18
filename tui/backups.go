@@ -142,7 +142,7 @@ func (b backupsModel) startRestore(file string) (backupsModel, tea.Cmd) {
 
 	cfg, rc, project := b.cfg, b.rc, b.selectedProject
 	go func() {
-		// Restore logs to the terminal only (no sync.log), like the original
+		// Restore logs to the terminal only (no backup log), like the original
 		// restoreBackup.sh; the sink streams every line to the UI.
 		log, _ := backup.NewLogger("", stream.sink(), false)
 		err := backup.Restore(context.Background(), cfg, rc, log, project, file,
@@ -275,7 +275,7 @@ func (b backupsModel) View() string {
 		return b.spinner.View() + " Loading backups…"
 	case bsProjects:
 		if len(b.projects.Items()) == 0 {
-			return titleStyle.Render("Backups") + "\n\n" +
+			return titleStyle.Render("Restore") + "\n\n" +
 				subtitleStyle.Render("No backups found on the remote yet. Run an upload first.")
 		}
 		return b.projects.View()

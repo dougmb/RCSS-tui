@@ -53,7 +53,7 @@ func ListTopLevel(ctx context.Context, cfg config.Config, rc *rclone.Client) ([]
 // sorted by name, matching restoreBackup.sh's `sort -r`). Mirrors
 // `rclone lsf --files-only`. An absent project yields an empty slice.
 func ListFiles(ctx context.Context, cfg config.Config, rc *rclone.Client, project string) ([]string, error) {
-	path := joinRemote(cfg.RemoteName, cfg.DriveDestination, project) + "/"
+	path := joinRemote(cfg.RemoteName, cfg.RemoteDestination, project) + "/"
 	files, err := rc.Lsf(ctx, path, rclone.LsfOptions{Mode: rclone.LsfFilesOnly})
 	if isDirNotFound(err) {
 		return nil, nil
@@ -78,7 +78,7 @@ type RestoreOptions struct {
 	// DryRun previews the download without writing files.
 	DryRun bool
 	// OutputPath overrides the download destination. When empty, the file is
-	// restored to <SyncRoot>/<project>/.
+	// restored to <SourceRoot>/<project>/.
 	OutputPath string
 }
 
@@ -93,21 +93,21 @@ func Restore(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Log
 
 	localPath := opts.OutputPath
 	if localPath == "" {
-		if cfg.SyncRoot == "" {
-			return fmt.Errorf("config incomplete: sync_root not set")
+		if cfg.SourceRoot == "" {
+			return fmt.Errorf("config incomplete: source_root not set")
 		}
-		// Root-level files restore into SyncRoot; project files into a
+		// Root-level files restore into SourceRoot; project files into a
 		// matching sub-folder.
-		localPath = cfg.SyncRoot
+		localPath = cfg.SourceRoot
 		if project != "" {
-			localPath = joinRemoteLocal(cfg.SyncRoot, project)
+			localPath = joinRemoteLocal(cfg.SourceRoot, project)
 		}
 	}
 	if err := os.MkdirAll(localPath, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", localPath, err)
 	}
 
-	src := joinRemote(cfg.RemoteName, cfg.DriveDestination, project, file)
+	src := joinRemote(cfg.RemoteName, cfg.RemoteDestination, project, file)
 	log.Infof("Downloading %s to %s...", file, localPath)
 
 	copyOpts := rclone.CopyOptions{

@@ -5,7 +5,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Folder screen: a directory-only file picker used to choose SyncRoot. It
+// Folder screen: a directory-only file picker used to choose SourceRoot. It
 // replaces editing BACKUP_ROOT by hand in backup.env.
 
 // folderChosenMsg tells the root model the user picked a directory.

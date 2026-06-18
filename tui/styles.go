@@ -13,12 +13,15 @@ func paneStyle(active bool) lipgloss.Style {
 }
 
 // Palette — a small, terminal-256 friendly theme. Kept in one place so every
-// screen shares the same look.
+// screen shares the same look. Colors are adaptive: the Dark variants preserve
+// the original look on dark terminals, while the Light variants keep text and
+// accents legible on light backgrounds.
 var (
-	colorAccent = lipgloss.Color("39")  // cyan/blue — titles, selection
-	colorMuted  = lipgloss.Color("241") // grey — help, subtitles
-	colorWarn   = lipgloss.Color("214") // amber — warnings
-	colorError  = lipgloss.Color("196") // red — errors
+	colorAccent = lipgloss.AdaptiveColor{Light: "25", Dark: "39"}   // blue/cyan — titles, selection
+	colorMuted  = lipgloss.AdaptiveColor{Light: "240", Dark: "241"} // grey — help, subtitles
+	colorWarn   = lipgloss.AdaptiveColor{Light: "130", Dark: "214"} // amber — warnings
+	colorError  = lipgloss.AdaptiveColor{Light: "124", Dark: "196"} // red — errors
+	colorOK     = lipgloss.AdaptiveColor{Light: "28", Dark: "42"}   // green — success
 )
 
 var (
@@ -38,6 +41,9 @@ var (
 
 	// warnStyle highlights WARN log lines.
 	warnStyle = lipgloss.NewStyle().Foreground(colorWarn)
+
+	// okStyle highlights success states (e.g. a successful last backup).
+	okStyle = lipgloss.NewStyle().Foreground(colorOK)
 
 	// tooSmallStyle is the centered warning shown below the minimum size.
 	tooSmallStyle = lipgloss.NewStyle().

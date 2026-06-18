@@ -113,11 +113,11 @@ func New(store *config.Store, rc *rclone.Client) Model {
 	}
 }
 
-// folderStart is the directory the picker opens at: the configured SyncRoot
+// folderStart is the directory the picker opens at: the configured SourceRoot
 // when set, otherwise the user's home directory.
 func (m Model) folderStart() string {
-	if m.cfg.SyncRoot != "" {
-		return m.cfg.SyncRoot
+	if m.cfg.SourceRoot != "" {
+		return m.cfg.SourceRoot
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return home
@@ -210,7 +210,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.account.load()
 
 	case folderChosenMsg:
-		m.cfg.SyncRoot = msg.path
+		m.cfg.SourceRoot = msg.path
 		m.store.Upsert(m.cfg)
 		m.saveErr = m.store.Save()
 		m.focus = focusSidebar
@@ -530,10 +530,10 @@ func (m Model) previewView() string {
 		body += "\n\n" + infoLine("Active account", m.cfg.RemoteName) +
 			"\n" + infoLine("Accounts configured", fmt.Sprintf("%d", len(m.store.Accounts)))
 	case screenFolder:
-		body += "\n\n" + infoLine("Sync folder", m.cfg.SyncRoot)
+		body += "\n\n" + infoLine("Backup source", m.cfg.SourceRoot)
 	case screenUpload, screenClean, screenBackups:
 		body += "\n\n" + infoLine("Remote", m.cfg.RemoteName) +
-			"\n" + infoLine("Destination", m.cfg.DriveDestination)
+			"\n" + infoLine("Destination", m.cfg.RemoteDestination)
 	}
 
 	if m.saveErr != nil {

@@ -56,9 +56,9 @@ Opens the full UI. From the main menu:
 
 | Screen | What it does |
 | --- | --- |
-| **Account** | Manage accounts (one per rclone remote): switch the active one, add via `rclone config`, or forget one |
-| **Sync folder** | Choose the local root folder whose sub-folders are your projects |
-| **Backups** | Browse remote projects → files and restore one, with live progress |
+| **Rclone Account** | Manage accounts (one per rclone remote): switch the active one, add via `rclone config`, or forget one |
+| **Backup source** | Choose the local root folder whose sub-folders are your projects |
+| **Restore** | Browse remote projects → files and restore one, with live progress |
 | **Back Up Now** | Copy all projects to the cloud now (one-way upload), streaming rclone progress |
 | **Clean** | Remove old **cloud** backups: explains the criteria, previews with a dry-run, then deletes; optional Force (double-confirmed) bypasses the safety lock |
 | **Settings** | Edit retention and behavior; saved to `config.toml` with a visible confirmation |
@@ -66,7 +66,7 @@ Opens the full UI. From the main menu:
 | **Logs** | Scroll the sync log with ERROR/WARN highlighting |
 | **About** | Version, rclone/scheduler status, and config/log locations |
 
-The UI requires a terminal of at least **80×24**; anything smaller renders a
+The UI requires a terminal of at least **80×12**; anything smaller renders a
 single centered notice (`Not enough space to render panels`).
 
 Global keys: `↑/↓` move · `enter`/`→` open · `1`–`9` jump to a screen (incl.
@@ -84,11 +84,11 @@ from each other: each has its own sync folder, destination, retention, log, and
 schedule. The active account is shown at the top of the sidebar and on the
 **About** screen.
 
-From the **Account** screen: `enter` switches the active account (creating its
+From the **Rclone Account** screen: `enter` switches the active account (creating its
 settings with defaults the first time a remote is chosen), `d` forgets an
 account's RCSS settings (the rclone remote itself is left intact), and
 **Configure a new account…** opens `rclone config` to add a remote. Settings,
-Schedule, Backups, etc. all act on the active account.
+Schedule, Restore, etc. all act on the active account.
 
 ### Headless (for cron)
 
@@ -118,15 +118,15 @@ Each account entry has these fields:
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `remote_name` | — | rclone remote, e.g. `drive:` (the account key) |
-| `sync_root` | — | local folder whose sub-folders are projects |
-| `drive_destination` | `Backups` | destination folder on the remote |
+| `source_root` | — | local folder whose sub-folders are projects |
+| `remote_destination` | `Backups` | destination folder on the remote |
 | `retention_days` | `1` | delete **local** files older than this after a successful upload |
 | `remote_retention_days` | `15` | delete **cloud** files older than this on clean |
 | `remote_cleanup_safety_days` | `2` | clean is blocked unless a backup newer than this exists |
 | `delete_after_upload` | `false` | delete all local files right after a successful upload |
 | `skip_dotfiles` | `false` | exclude hidden files/folders from uploads |
 | `ignored_folders` | `scripts config bin logs lost+found` | sub-folders never treated as projects |
-| `log_file` | (config dir)/`sync-<account>.log` | append-only run log (per account) |
+| `log_file` | (config dir)/`backup-<account>.log` | append-only run log (per account) |
 
 ## Safety guarantees
 

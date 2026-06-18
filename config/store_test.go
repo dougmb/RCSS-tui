@@ -17,13 +17,13 @@ func TestStoreUpsertActiveRemove(t *testing.T) {
 
 	// Upsert replaces by key (RemoteName) rather than duplicating.
 	c, _ := s.Get("drive:")
-	c.SyncRoot = "/data"
+	c.SourceRoot = "/data"
 	s.Upsert(c)
 	if len(s.Accounts) != 2 {
 		t.Fatalf("upsert should replace; got %d accounts", len(s.Accounts))
 	}
-	if got, ok := s.Get("drive:"); !ok || got.SyncRoot != "/data" {
-		t.Fatalf("expected updated SyncRoot, got %+v ok=%v", got, ok)
+	if got, ok := s.Get("drive:"); !ok || got.SourceRoot != "/data" {
+		t.Fatalf("expected updated SourceRoot, got %+v ok=%v", got, ok)
 	}
 
 	s.SetActive("work:")
@@ -54,8 +54,8 @@ func TestResolveLogFilePerAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if base := filepath.Base(got); base != "sync-drive.log" {
-		t.Errorf("want sync-drive.log, got %s", base)
+	if base := filepath.Base(got); base != "backup-drive.log" {
+		t.Errorf("want backup-drive.log, got %s", base)
 	}
 
 	c := NewAccount("x:")
@@ -64,7 +64,7 @@ func TestResolveLogFilePerAccount(t *testing.T) {
 		t.Errorf("explicit log not honored: %s", got)
 	}
 
-	if got, _ := (Config{}).ResolveLogFile(); filepath.Base(got) != "sync.log" {
-		t.Errorf("want sync.log for accountless config, got %s", filepath.Base(got))
+	if got, _ := (Config{}).ResolveLogFile(); filepath.Base(got) != "backup.log" {
+		t.Errorf("want backup.log for accountless config, got %s", filepath.Base(got))
 	}
 }
