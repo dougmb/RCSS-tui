@@ -30,3 +30,4 @@ backup.env
 *.swp
 *~
 .DS_Store
+CLAUDE.md

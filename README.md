@@ -159,4 +159,4 @@ tui/         Bubbletea root model + styles + one file per screen
 
 ## License
 
-See repository.
+Released under the [MIT License](LICENSE).

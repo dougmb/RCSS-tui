@@ -1,0 +1,49 @@
+# GoReleaser config — builds cross-platform binaries and a GitHub Release.
+# Run a snapshot locally with:  goreleaser release --snapshot --clean
+# Cut a real release by pushing a tag (e.g. v0.1.0); a CI release job invokes
+# `goreleaser release --clean`.
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: rcss
+    main: .
+    binary: rcss
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/dougmb/rcss-tui/tui.version={{ .Version }}
+
+archives:
+  - id: rcss
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: true
