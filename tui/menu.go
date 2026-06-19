@@ -25,7 +25,7 @@ func newMenu() list.Model {
 		menuItem{"Rclone Account", "Select or configure an rclone remote (e.g. Google Drive).", screenAccount},
 		menuItem{"Backup source", "Choose the local folders to back up; each is uploaded as its own backup.", screenFolder},
 		menuItem{"Back Up Now", "Copy all projects to the cloud now (one-way upload), with live progress.", screenUpload},
-		menuItem{"Restore", "Browse cloud backups by project and restore individual files.", screenBackups},
+		menuItem{"Restore", "Browse cloud backups and restore any file or folder.", screenBackups},
 		menuItem{"Clean", "Remove old CLOUD backups beyond retention, with a dry-run preview and safety lock.", screenClean},
 		menuItem{"Settings", "Configure paths, retention, skip formats, ignored folders and cleanup behavior.", screenSettings},
 		menuItem{"Schedule", "Set up automatic backup and clean schedules via your OS scheduler (crontab / Task Scheduler).", screenSchedule},

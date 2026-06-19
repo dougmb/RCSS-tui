@@ -20,6 +20,15 @@ import (
 	"github.com/dougmb/rcss-tui/rclone"
 )
 
+// Shared messages used by multiple sub-models.
+
+type goBackMsg struct{}
+
+// doneTimeoutMsg is sent after a short delay when a sub-model shows a save
+// confirmation. The receiving model returns to the menu if it is still in its
+// done state.
+type doneTimeoutMsg struct{}
+
 // Minimum terminal size. Below this the UI renders only a centered warning.
 const (
 	MinWidth  = 80
@@ -213,8 +222,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.store.SetActive(msg.name)
 		m.cfg, _ = m.store.Active()
 		m.saveErr = m.store.Save()
+		m.account.saveErr = m.saveErr
 		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
-		m.focus = focusSidebar
 		return m, nil
 
 	case accountForgetMsg:
@@ -222,8 +231,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.store.Remove(msg.name)
 		m.cfg, _ = m.store.Active()
 		m.saveErr = m.store.Save()
-		m.account = newAccountModel(m.rc, m.cfg.RemoteName, m.store.Names())
-		m.account.setSize(m.contentW(), m.detailH)
+		m.account.saveErr = m.saveErr
+		m.account.current = m.cfg.RemoteName
+		delete(m.account.configured, msg.name)
 		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
 		return m, m.account.load()
 
@@ -231,7 +241,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cfg.SourceFolders = msg.folders
 		m.store.Upsert(m.cfg)
 		m.saveErr = m.store.Save()
-		m.focus = focusSidebar
+		m.sources.saveErr = m.saveErr
 		return m, nil
 
 	case goBackMsg:
@@ -367,7 +377,7 @@ func (m Model) enterScreen(s screen) (tea.Model, tea.Cmd) {
 	case screenBackups:
 		m.backups = newBackupsModel(m.cfg, m.rc)
 		m.backups.setSize(m.contentW(), m.detailH)
-		return m, tea.Batch(m.backups.loadProjects(), m.backups.spinner.Tick)
+		return m, tea.Batch(m.backups.loadEntries(), m.backups.spinner.Tick)
 	case screenUpload:
 		m.upload = newUploadModel(m.cfg, m.rc)
 		m.upload.setSize(m.contentW(), m.detailH)
@@ -639,7 +649,7 @@ func (m Model) detailFooter() string {
 	var hint string
 	switch m.screen {
 	case screenAccount:
-		hint = "↑/↓ move • enter switch • d forget • r refresh • / filter • esc back"
+		hint = m.account.footerHint()
 	case screenFolder:
 		hint = m.sources.footerHint()
 	case screenBackups:

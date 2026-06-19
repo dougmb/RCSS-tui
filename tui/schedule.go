@@ -57,8 +57,10 @@ type scheduleModel struct {
 	editBuf string     // in-progress digit entry for the focused Time field
 
 	current []scheduler.Job // what is actually scheduled (for the summary)
-	status  string          // inline save feedback
-	failed  bool
+
+	// done flips to true once saved; saveErr is set by apply().
+	done    bool
+	saveErr error
 
 	width, height int
 }
@@ -116,6 +118,21 @@ func (s *scheduleModel) clampFocus() {
 }
 
 func (s scheduleModel) Update(msg tea.Msg) (scheduleModel, tea.Cmd) {
+	if s.done {
+		switch msg := msg.(type) {
+		case doneTimeoutMsg:
+			return s, func() tea.Msg { return goBackMsg{} }
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "q":
+				return s, tea.Quit
+			case "enter", "esc", "backspace":
+				return s, func() tea.Msg { return goBackMsg{} }
+			}
+		}
+		return s, nil
+	}
+
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return s, nil
@@ -156,8 +173,7 @@ func (s scheduleModel) Update(msg tea.Msg) (scheduleModel, tea.Cmd) {
 		}
 		return s, nil
 	case "enter":
-		s.save()
-		return s, nil
+		return s, s.save()
 	}
 
 	// Digit entry builds a 4-digit HHMM time on the focused Time field.
@@ -266,23 +282,23 @@ func (s scheduleModel) apply() error {
 	return scheduler.Apply(s.cfg.RemoteName, s.buildJobs(), exe, logPath)
 }
 
-// save commits any typed time, applies the schedule, and records inline
-// feedback while staying on the editor (which is refreshed from the result).
-func (s *scheduleModel) save() {
+// save commits any typed time, applies the schedule, and flips to the done
+// state so the confirmation is shown before auto-returning to the menu.
+func (s *scheduleModel) save() tea.Cmd {
 	s.commitFocusedTime()
-	if err := s.apply(); err != nil {
-		s.status, s.failed = fmt.Sprintf("Failed to update %s: %s", scheduler.Backend(), err.Error()), true
-		return
+	s.saveErr = s.apply()
+	if s.saveErr == nil {
+		s.current, _ = scheduler.Current(s.cfg.RemoteName)
 	}
-	if !s.anyEnabled() {
-		s.status, s.failed = "Schedule cleared — RCSS jobs removed.", false
-	} else {
-		s.status, s.failed = "Scheduled successfully", false
-	}
-	s.current, _ = scheduler.Current(s.cfg.RemoteName)
+	s.done = true
+	return tea.Tick(saveConfirmationTimeout, func(time.Time) tea.Msg { return doneTimeoutMsg{} })
 }
 
 func (s scheduleModel) View() string {
+	if s.done {
+		return s.doneView()
+	}
+
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Schedule — %s (%s)", s.cfg.RemoteName, scheduler.Backend())))
 	b.WriteString("\n")
@@ -303,12 +319,26 @@ func (s scheduleModel) View() string {
 		save = subtitleStyle.Render(save)
 	}
 	b.WriteString(save)
-	if s.status != "" {
-		b.WriteString("   ")
-		if s.failed {
-			b.WriteString(errorStyle.Render("✗ " + s.status))
-		} else {
-			b.WriteString(okStyle.Render("✓ " + s.status))
+	return b.String()
+}
+
+// doneView renders the save confirmation (success or error) before the screen
+// auto-returns to the menu.
+func (s scheduleModel) doneView() string {
+	if s.saveErr != nil {
+		return errorStyle.Render("✗ Could not update schedule") + "\n\n" +
+			subtitleStyle.Render(s.saveErr.Error())
+	}
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("✓ Schedule saved"))
+	b.WriteString("\n\n")
+	if !s.anyEnabled() {
+		b.WriteString(infoLine("Status", "RCSS jobs removed"))
+	} else {
+		b.WriteString(subtitleStyle.Render("Currently scheduled:"))
+		for _, j := range s.current {
+			fmt.Fprintf(&b, "\n  • %s — %s at %s", j.Kind.Title(), j.Cadence(), j.Time())
 		}
 	}
 	return b.String()
@@ -365,6 +395,9 @@ func fieldValue(v string, focused bool) string {
 func wdShort(d time.Weekday) string { return d.String()[:3] }
 
 func (s scheduleModel) footerHint() string {
+	if s.done {
+		return "enter/esc back • q quit"
+	}
 	return "↑/↓ field • ←/→ change • space toggle • enter save • esc back"
 }
 

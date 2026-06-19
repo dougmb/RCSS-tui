@@ -3,6 +3,7 @@ package tui
 import (
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -25,6 +26,10 @@ type sourcesModel struct {
 
 	status        string // transient notice (e.g. duplicate warning)
 	width, height int
+
+	// done flips to true once the root has saved the source folders.
+	done    bool
+	saveErr error
 }
 
 func newSourcesModel(folders []string, start string) sourcesModel {
@@ -39,6 +44,21 @@ func (s *sourcesModel) setSize(w, h int) {
 }
 
 func (s sourcesModel) Update(msg tea.Msg) (sourcesModel, tea.Cmd) {
+	if s.done {
+		switch msg := msg.(type) {
+		case doneTimeoutMsg:
+			return s, func() tea.Msg { return goBackMsg{} }
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "q":
+				return s, tea.Quit
+			case "enter", "esc", "backspace":
+				return s, func() tea.Msg { return goBackMsg{} }
+			}
+		}
+		return s, nil
+	}
+
 	// The embedded picker's selection bubbles up to the root and is routed back
 	// here as a folderChosenMsg; add it to the list rather than letting it leave
 	// this screen.
@@ -61,9 +81,11 @@ func (s sourcesModel) Update(msg tea.Msg) (sourcesModel, tea.Cmd) {
 	case "esc":
 		return s, func() tea.Msg { return goBackMsg{} }
 	case "enter":
-		return s, func() tea.Msg {
-			return sourcesSavedMsg{folders: append([]string(nil), s.folders...)}
-		}
+		s.done = true
+		return s, tea.Batch(
+			func() tea.Msg { return sourcesSavedMsg{folders: append([]string(nil), s.folders...)} },
+			tea.Tick(saveConfirmationTimeout, func(time.Time) tea.Msg { return doneTimeoutMsg{} }),
+		)
 	case "up", "k":
 		if s.cursor > 0 {
 			s.cursor--
@@ -128,6 +150,9 @@ func (s *sourcesModel) addFolder(path string) {
 }
 
 func (s sourcesModel) View() string {
+	if s.done {
+		return s.doneView()
+	}
 	if s.picking {
 		return s.picker.View()
 	}
@@ -161,7 +186,32 @@ func (s sourcesModel) View() string {
 	return b.String()
 }
 
+// doneView renders the save confirmation before auto-returning to the menu.
+func (s sourcesModel) doneView() string {
+	if s.saveErr != nil {
+		return errorStyle.Render("✗ Could not save backup sources") + "\n\n" +
+			subtitleStyle.Render(s.saveErr.Error())
+	}
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("✓ Backup sources saved"))
+	b.WriteString("\n\n")
+	if len(s.folders) == 0 {
+		b.WriteString(subtitleStyle.Render("No folders configured."))
+	} else {
+		for _, f := range s.folders {
+			b.WriteString("  • ")
+			b.WriteString(clip(f, s.width-6))
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
 func (s sourcesModel) footerHint() string {
+	if s.done {
+		return "enter/esc back • q quit"
+	}
 	if s.picking {
 		return "→/l open • ←/h up • enter add this folder • esc cancel"
 	}

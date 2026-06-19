@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"os/exec"
+	"time"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -68,9 +69,6 @@ type remoteChosenMsg struct{ name string }
 // remote is left intact).
 type accountForgetMsg struct{ name string }
 
-// goBackMsg returns to the main menu.
-type goBackMsg struct{}
-
 // accountModel is the account screen's sub-model.
 type accountModel struct {
 	rc         *rclone.Client
@@ -79,6 +77,12 @@ type accountModel struct {
 	list       list.Model
 	loading    bool
 	err        error
+
+	// done flips to true once the root has saved the account change.
+	// saveErr is filled by the root; doneAction describes what changed.
+	done       bool
+	saveErr    error
+	doneAction string
 }
 
 func newAccountModel(rc *rclone.Client, current string, accounts []string) accountModel {
@@ -108,6 +112,21 @@ func (a accountModel) load() tea.Cmd {
 
 // Update handles the account screen's messages and keys.
 func (a accountModel) Update(msg tea.Msg) (accountModel, tea.Cmd) {
+	if a.done {
+		switch msg := msg.(type) {
+		case doneTimeoutMsg:
+			return a, func() tea.Msg { return goBackMsg{} }
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "q":
+				return a, tea.Quit
+			case "enter", "esc", "backspace":
+				return a, func() tea.Msg { return goBackMsg{} }
+			}
+		}
+		return a, nil
+	}
+
 	switch msg := msg.(type) {
 	case remotesLoadedMsg:
 		a.loading = false
@@ -144,14 +163,24 @@ func (a accountModel) Update(msg tea.Msg) (accountModel, tea.Cmd) {
 		case "d":
 			if it, ok := a.list.SelectedItem().(remoteItem); ok && it.configured {
 				name := it.name
-				return a, func() tea.Msg { return accountForgetMsg{name: name} }
+				a.done = true
+				a.doneAction = "forgotten"
+				return a, tea.Batch(
+					func() tea.Msg { return accountForgetMsg{name: name} },
+					tea.Tick(saveConfirmationTimeout, func(time.Time) tea.Msg { return doneTimeoutMsg{} }),
+				)
 			}
 			return a, nil
 		case "enter":
 			switch it := a.list.SelectedItem().(type) {
 			case remoteItem:
 				name := it.name
-				return a, func() tea.Msg { return remoteChosenMsg{name: name} }
+				a.done = true
+				a.doneAction = "activated"
+				return a, tea.Batch(
+					func() tea.Msg { return remoteChosenMsg{name: name} },
+					tea.Tick(saveConfirmationTimeout, func(time.Time) tea.Msg { return doneTimeoutMsg{} }),
+				)
 			case configItem:
 				cmd := exec.Command("rclone", "config")
 				return a, tea.ExecProcess(cmd, func(error) tea.Msg {
@@ -170,6 +199,9 @@ func (a accountModel) Update(msg tea.Msg) (accountModel, tea.Cmd) {
 // View renders the inner body of the account screen (the root frames it and
 // adds the footer).
 func (a accountModel) View() string {
+	if a.done {
+		return a.doneView()
+	}
 	if a.loading {
 		return subtitleStyle.Render("Loading remotes…")
 	}
@@ -177,4 +209,29 @@ func (a accountModel) View() string {
 		return errorStyle.Render("Failed to list remotes: " + a.err.Error())
 	}
 	return a.list.View()
+}
+
+func (a accountModel) footerHint() string {
+	if a.done {
+		return "enter/esc back • q quit"
+	}
+	return "↑/↓ move • enter switch • d forget • r refresh • / filter • esc back"
+}
+
+// doneView renders the save confirmation before auto-returning to the menu.
+func (a accountModel) doneView() string {
+	if a.saveErr != nil {
+		return errorStyle.Render("✗ Could not save account") + "\n\n" +
+			subtitleStyle.Render(a.saveErr.Error())
+	}
+
+	var title string
+	switch a.doneAction {
+	case "forgotten":
+		title = "✓ Account settings forgotten"
+	default:
+		title = "✓ Account activated"
+	}
+	return titleStyle.Render(title) + "\n\n" +
+		infoLine("Active account", a.current)
 }

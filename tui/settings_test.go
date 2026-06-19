@@ -22,12 +22,43 @@ func drainSaved(t *testing.T, cmd tea.Cmd) config.Config {
 	if cmd == nil {
 		t.Fatal("expected a command from save, got nil")
 	}
-	msg := cmd()
-	saved, ok := msg.(settingsSavedMsg)
-	if !ok {
-		t.Fatalf("expected settingsSavedMsg, got %T", msg)
+	return extractSaved(t, cmd())
+}
+
+// extractSaved walks a BatchMsg (or single message) and returns the first
+// settingsSavedMsg it finds.
+func extractSaved(t *testing.T, msg tea.Msg) config.Config {
+	t.Helper()
+	switch m := msg.(type) {
+	case settingsSavedMsg:
+		return m.cfg
+	case tea.BatchMsg:
+		for _, c := range m {
+			if c != nil {
+				if cfg, ok := tryExtractSaved(c()); ok {
+					return cfg
+				}
+			}
+		}
 	}
-	return saved.cfg
+	t.Fatalf("expected settingsSavedMsg inside command output, got %T", msg)
+	return config.Config{}
+}
+
+func tryExtractSaved(msg tea.Msg) (config.Config, bool) {
+	switch m := msg.(type) {
+	case settingsSavedMsg:
+		return m.cfg, true
+	case tea.BatchMsg:
+		for _, c := range m {
+			if c != nil {
+				if cfg, ok := tryExtractSaved(c()); ok {
+					return cfg, true
+				}
+			}
+		}
+	}
+	return config.Config{}, false
 }
 
 func settingsVisibleHas(s settingsModel, key string) bool {

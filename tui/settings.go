@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -34,6 +35,10 @@ const (
 const (
 	setLeftColW = 28 // gutter + label column, before the value
 	setChildPad = 2  // extra indent for a sub-setting row
+
+	// saveConfirmationTimeout is how long a save-confirmation screen stays
+	// visible before automatically returning to the menu.
+	saveConfirmationTimeout = 0 * time.Second
 )
 
 // defaultSkipFormats pre-fills the "Skip file formats" box with common junk
@@ -219,8 +224,11 @@ func (s settingsModel) toConfig() config.Config {
 func (s settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 	// Once saved, the screen is a confirmation; any key returns to the menu.
 	if s.done {
-		if key, ok := msg.(tea.KeyMsg); ok {
-			switch key.String() {
+		switch msg := msg.(type) {
+		case doneTimeoutMsg:
+			return s, func() tea.Msg { return goBackMsg{} }
+		case tea.KeyMsg:
+			switch msg.String() {
 			case "q":
 				return s, tea.Quit
 			case "enter", "esc", "backspace":
@@ -345,7 +353,11 @@ func (s settingsModel) save() (settingsModel, tea.Cmd) {
 	}
 	s.done = true
 	cfg := s.toConfig()
-	return s, func() tea.Msg { return settingsSavedMsg{cfg: cfg} }
+	cmd := tea.Batch(
+		func() tea.Msg { return settingsSavedMsg{cfg: cfg} },
+		tea.Tick(saveConfirmationTimeout, func(time.Time) tea.Msg { return doneTimeoutMsg{} }),
+	)
+	return s, cmd
 }
 
 func (s settingsModel) View() string {
