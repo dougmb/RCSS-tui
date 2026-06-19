@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const backendName = "crontab"
@@ -113,9 +114,8 @@ func setManaged(lines []string) error {
 }
 
 // apply rewrites the managed block: it keeps every line that doesn't belong to
-// account, then appends one line per job for this account. Daily jobs use
-// "* * *" for the day fields; weekly jobs run on Sunday (dow 0). Each line runs
-// the rcss binary headless with --account so the right account is selected, and
+// account, then appends one line per job for this account. Each line runs the
+// rcss binary headless with --account so the right account is selected, and
 // appends stdout/stderr to logPath.
 func apply(account string, jobs []Job, exe, logPath string) error {
 	existing, err := managedLines()
@@ -129,14 +129,21 @@ func apply(account string, jobs []Job, exe, logPath string) error {
 		}
 	}
 	for _, j := range jobs {
-		dow := "*"
-		if j.Weekly {
-			dow = "0"
-		}
-		lines = append(lines, fmt.Sprintf(`%d %d * * %s %s %s --account %q >> %s 2>&1`,
-			j.Min, j.Hour, dow, exe, j.Kind.Arg(), account, logPath))
+		lines = append(lines, formatJobLine(account, j, exe, logPath))
 	}
 	return setManaged(lines)
+}
+
+// formatJobLine renders one managed crontab line for a job. Daily jobs use "*"
+// for the day-of-week field; weekly jobs set it to the weekday number (0=Sun..
+// 6=Sat).
+func formatJobLine(account string, j Job, exe, logPath string) string {
+	dow := "*"
+	if j.Weekly {
+		dow = strconv.Itoa(int(j.Weekday))
+	}
+	return fmt.Sprintf(`%d %d * * %s %s %s --account %q >> %s 2>&1`,
+		j.Min, j.Hour, dow, exe, j.Kind.Arg(), account, logPath)
 }
 
 // current parses the managed crontab lines that belong to account back into
@@ -151,28 +158,44 @@ func current(account string) ([]Job, error) {
 		if lineAccount(ln) != account {
 			continue
 		}
-		f := strings.Fields(ln)
-		if len(f) < 6 {
-			continue
+		if j, ok := parseManagedLine(ln); ok {
+			jobs = append(jobs, j)
 		}
-		min, err1 := strconv.Atoi(f[0])
-		hour, err2 := strconv.Atoi(f[1])
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		j := Job{Kind: Upload, Hour: hour, Min: min, Weekly: f[4] == "0"}
-		for _, tok := range f[5:] {
-			if tok == "clean" {
-				j.Kind = Clean
-				break
-			}
-			if tok == "upload" {
-				break
-			}
-		}
-		jobs = append(jobs, j)
 	}
 	return jobs, nil
+}
+
+// parseManagedLine parses one managed crontab line back into a Job. It reads the
+// minute/hour fields, recovers the weekday from the day-of-week field (any value
+// other than "*" means weekly; cron's 7 wraps to Sunday), and detects the kind
+// from the rcss subcommand token. Returns ok=false for malformed lines.
+func parseManagedLine(line string) (Job, bool) {
+	f := strings.Fields(line)
+	if len(f) < 6 {
+		return Job{}, false
+	}
+	min, err1 := strconv.Atoi(f[0])
+	hour, err2 := strconv.Atoi(f[1])
+	if err1 != nil || err2 != nil {
+		return Job{}, false
+	}
+	j := Job{Kind: Upload, Hour: hour, Min: min}
+	if dow := f[4]; dow != "*" {
+		if n, err := strconv.Atoi(dow); err == nil {
+			j.Weekly = true
+			j.Weekday = time.Weekday(((n % 7) + 7) % 7) // 7 → Sunday
+		}
+	}
+	for _, tok := range f[5:] {
+		if tok == "clean" {
+			j.Kind = Clean
+			break
+		}
+		if tok == "upload" {
+			break
+		}
+	}
+	return j, true
 }
 
 // lineAccount returns the account a managed cron line targets (the token after

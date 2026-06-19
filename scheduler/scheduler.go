@@ -9,7 +9,10 @@
 // translates jobs to and from the native format.
 package scheduler
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Kind is the headless subcommand a scheduled job runs.
 type Kind int
@@ -39,10 +42,11 @@ func (k Kind) Title() string {
 
 // Job is one scheduled RCSS run.
 type Job struct {
-	Kind   Kind
-	Hour   int  // 0–23
-	Min    int  // 0–59
-	Weekly bool // false = daily; true = weekly, on Sunday
+	Kind    Kind
+	Hour    int          // 0–23
+	Min     int          // 0–59
+	Weekly  bool         // false = daily; true = weekly
+	Weekday time.Weekday // day of the weekly run (0=Sun..6=Sat); used when Weekly
 }
 
 // Time renders the job's time as HH:MM, or "??:??" when unknown (a backend may
@@ -54,12 +58,19 @@ func (j Job) Time() string {
 	return fmt.Sprintf("%02d:%02d", j.Hour, j.Min)
 }
 
-// Cadence renders the job's recurrence in words.
+// Cadence renders the job's recurrence in words, e.g. "daily" or "weekly (Mon)".
 func (j Job) Cadence() string {
 	if j.Weekly {
-		return "weekly (Sun)"
+		return "weekly (" + weekdayShort(j.Weekday) + ")"
 	}
 	return "daily"
+}
+
+// weekdayShort returns the three-letter label for a weekday (e.g. "Mon").
+func weekdayShort(d time.Weekday) string {
+	// Normalize so out-of-range values (e.g. cron's 7) wrap to a valid day.
+	d = time.Weekday((int(d)%7 + 7) % 7)
+	return d.String()[:3]
 }
 
 // Backend returns a human label for the active OS scheduler ("crontab" or

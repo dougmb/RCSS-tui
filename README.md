@@ -29,7 +29,7 @@ credentials in its own config; RCSS never handles API secrets.
 - `charmbracelet/bubbletea` — framework (Elm architecture)
 - `charmbracelet/lipgloss` — styles / theme
 - `charmbracelet/bubbles` — list, filepicker, viewport, progress, spinner
-- `charmbracelet/huh` — forms (Settings, Schedule)
+- `charmbracelet/huh` — forms (Settings)
 - `BurntSushi/toml` — config file
 - Runtime: the `rclone` binary on your `PATH`
 
@@ -158,9 +158,12 @@ A first run, end to end:
    account root) and **editable** to confirm before you start; press `enter` to
    begin the one-way upload. Progress streams live and it finishes with
    `✓ Backup … in <duration>`. (Edits here apply to this run only.)
-6. **Schedule** — answer *Schedule daily upload?* (+ time `HH:MM`) and *Schedule
-   weekly clean (Sundays)?* (+ time). RCSS installs the matching crontab / Task
-   Scheduler jobs for this account — no root/admin needed.
+6. **Schedule** — a single editor (pre-filled with whatever is already
+   scheduled) where the **Upload** and **Clean** jobs are each toggled on/off and
+   set to **Daily** or **Weekly on a chosen weekday** at a time: `↑/↓` move
+   between fields, `←/→` change a value, `space` toggles a job, type digits for
+   the time, `enter` saves with inline confirmation. RCSS installs the matching
+   crontab / Task Scheduler jobs for this account — no root/admin needed.
 7. **Restore** — pick a project (📁) → pick a file (or a loose file 📄) → confirm
    the **local destination** (pre-filled from Settings, editable) → `enter`
    restores it with progress.
@@ -187,7 +190,7 @@ Opens the full UI. From the main menu:
 | **Back Up Now** | Copy all projects to the cloud now (one-way upload), streaming rclone progress |
 | **Clean** | Remove old **cloud** backups: explains the criteria, previews with a dry-run, then deletes; optional Force (double-confirmed) bypasses the safety lock |
 | **Settings** | Edit retention and behavior; saved to `config.toml` with a visible confirmation |
-| **Schedule** | Install daily-backup / weekly-clean jobs into your OS scheduler (crontab / Task Scheduler) |
+| **Schedule** | Toggle and time the Upload / Clean jobs (daily, or weekly on a chosen weekday) in one editor, pre-filled with the current schedule; installs them into your OS scheduler (crontab / Task Scheduler) |
 | **Logs** | Scroll the sync log with ERROR/WARN highlighting |
 | **About** | Version, rclone/scheduler status, and config/log locations |
 

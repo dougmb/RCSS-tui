@@ -326,8 +326,6 @@ func (m Model) helpToggleAllowed() bool {
 	switch m.screen {
 	case screenSettings:
 		return m.settings.done // a huh form while editing; free once saved
-	case screenSchedule:
-		return m.schedule.state == scDone
 	case screenAccount:
 		return m.account.list.FilterState() != list.Filtering
 	case screenBackups:

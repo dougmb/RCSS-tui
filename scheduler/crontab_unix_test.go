@@ -1,0 +1,116 @@
+//go:build !windows
+
+package scheduler
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// TestFormatParseRoundTrip checks that a job survives being formatted into a
+// managed crontab line and parsed back — covering both daily and weekly (on a
+// non-Sunday weekday) cadences and the Clean kind. It exercises the pure
+// helpers only, so the real crontab is never touched.
+func TestFormatParseRoundTrip(t *testing.T) {
+	cases := []Job{
+		{Kind: Upload, Hour: 3, Min: 0},                                       // daily upload
+		{Kind: Clean, Hour: 7, Min: 30, Weekly: true, Weekday: time.Wednesday}, // weekly clean, Wed
+		{Kind: Upload, Hour: 23, Min: 59, Weekly: true, Weekday: time.Sunday},  // weekly upload, Sun
+	}
+	for _, want := range cases {
+		line := formatJobLine("drive:", want, "/usr/bin/rcss", "/tmp/backup.log")
+		got, ok := parseManagedLine(line)
+		if !ok {
+			t.Fatalf("parseManagedLine failed for line: %s", line)
+		}
+		if got != want {
+			t.Errorf("round-trip mismatch:\n line: %s\n want: %+v\n got:  %+v", line, want, got)
+		}
+		if a := lineAccount(line); a != "drive:" {
+			t.Errorf("lineAccount = %q, want drive:", a)
+		}
+	}
+}
+
+// TestParseManagedLineRejectsGarbage checks malformed lines are skipped.
+func TestParseManagedLineRejectsGarbage(t *testing.T) {
+	for _, bad := range []string{"", "not a cron line", "x y * * * rcss upload"} {
+		if _, ok := parseManagedLine(bad); ok {
+			t.Errorf("expected parse to fail for %q", bad)
+		}
+	}
+}
+
+// fakeCrontab is a stand-in `crontab` that stores the crontab in $CRONTAB_STORE,
+// mimicking `crontab -l` (print or exit 1 when none) and `crontab -` (read
+// stdin). It lets the apply/current path be exercised end-to-end without
+// touching the user's real crontab.
+const fakeCrontab = `#!/bin/sh
+store="$CRONTAB_STORE"
+case "$1" in
+  -l) if [ -f "$store" ]; then cat "$store"; else exit 1; fi ;;
+  -)  cat > "$store" ;;
+  *)  exit 0 ;;
+esac
+`
+
+// TestApplyCurrentFakeCrontab exercises apply/current through the real exec path
+// against a fake crontab, validating the weekday round-trip and the safety
+// invariant that other accounts' managed lines survive add/clear.
+func TestApplyCurrentFakeCrontab(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "crontab")
+	if err := os.WriteFile(bin, []byte(fakeCrontab), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CRONTAB_STORE", filepath.Join(dir, "store"))
+
+	exe, log := "/usr/bin/rcss", "/tmp/backup.log"
+	drive := []Job{
+		{Kind: Upload, Hour: 3, Min: 0},
+		{Kind: Clean, Hour: 7, Min: 30, Weekly: true, Weekday: time.Wednesday},
+	}
+	if err := apply("drive:", drive, exe, log); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := current("drive:"); !jobsEqual(got, drive) {
+		t.Fatalf("drive round-trip: got %+v want %+v", got, drive)
+	}
+
+	// Adding a second account must preserve the first account's jobs.
+	if err := apply("work:", []Job{{Kind: Upload, Hour: 1, Min: 15}}, exe, log); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := current("drive:"); !jobsEqual(got, drive) {
+		t.Errorf("drive jobs not preserved after adding work:, got %+v", got)
+	}
+	if got, _ := current("work:"); len(got) != 1 || got[0].Hour != 1 || got[0].Min != 15 {
+		t.Errorf("work job wrong: %+v", got)
+	}
+
+	// Clearing drive: must leave work: intact.
+	if err := apply("drive:", nil, exe, log); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := current("drive:"); len(got) != 0 {
+		t.Errorf("drive not cleared: %+v", got)
+	}
+	if got, _ := current("work:"); len(got) != 1 {
+		t.Errorf("work: removed unexpectedly: %+v", got)
+	}
+}
+
+func jobsEqual(a, b []Job) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

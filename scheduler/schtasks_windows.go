@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const backendName = "Task Scheduler"
@@ -70,7 +71,7 @@ func createTask(account string, j Job, exe string) error {
 		"/ST", fmt.Sprintf("%02d:%02d", j.Hour, j.Min),
 	}
 	if j.Weekly {
-		args = append(args, "/SC", "WEEKLY", "/D", "SUN")
+		args = append(args, "/SC", "WEEKLY", "/D", schtasksDay(j.Weekday))
 	} else {
 		args = append(args, "/SC", "DAILY")
 	}
@@ -78,6 +79,12 @@ func createTask(account string, j Job, exe string) error {
 		return fmt.Errorf("creating task %s: %w: %s", taskName(account, j.Kind), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// schtasksDay maps a weekday to the /D token schtasks expects (SUN..SAT).
+func schtasksDay(d time.Weekday) string {
+	days := [...]string{"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"}
+	return days[(int(d)%7+7)%7]
 }
 
 // deleteTask removes a task; the error (e.g. when absent) is the caller's to
@@ -106,6 +113,9 @@ func current(account string) ([]Job, error) {
 func parseTaskXML(xml string, k Kind) Job {
 	xml = strings.ReplaceAll(xml, "\x00", "")
 	j := Job{Kind: k, Hour: -1, Min: -1, Weekly: strings.Contains(xml, "ScheduleByWeek")}
+	if j.Weekly {
+		j.Weekday = parseDaysOfWeek(xml)
+	}
 
 	const open, close = "<StartBoundary>", "</StartBoundary>"
 	i := strings.Index(xml, open)
@@ -133,4 +143,23 @@ func parseTaskXML(xml string, k Kind) Job {
 		j.Min = m
 	}
 	return j
+}
+
+// parseDaysOfWeek finds the weekday inside a weekly task's <DaysOfWeek> block
+// (e.g. <DaysOfWeek><Wednesday/></DaysOfWeek>). Defaults to Sunday when absent.
+func parseDaysOfWeek(xml string) time.Weekday {
+	days := [...]struct {
+		tag string
+		day time.Weekday
+	}{
+		{"<Sunday", time.Sunday}, {"<Monday", time.Monday}, {"<Tuesday", time.Tuesday},
+		{"<Wednesday", time.Wednesday}, {"<Thursday", time.Thursday},
+		{"<Friday", time.Friday}, {"<Saturday", time.Saturday},
+	}
+	for _, d := range days {
+		if strings.Contains(xml, d.tag) {
+			return d.day
+		}
+	}
+	return time.Sunday
 }

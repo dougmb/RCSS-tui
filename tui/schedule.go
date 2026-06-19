@@ -5,91 +5,255 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
 
 	"github.com/dougmb/rcss-tui/config"
 	"github.com/dougmb/rcss-tui/scheduler"
 )
 
-// Schedule screen: presets that register RCSS jobs with the host OS scheduler
-// (crontab on Unix, Task Scheduler on Windows; no root/admin) calling the rcss
-// binary headless — `rcss upload` daily and/or `rcss clean` weekly. Disabling
-// both removes the managed jobs.
+// Schedule screen: a single interactive window that registers RCSS jobs with the
+// host OS scheduler (crontab on Unix, Task Scheduler on Windows; no root/admin),
+// calling the rcss binary headless — `rcss upload` and/or `rcss clean`. Each job
+// is Daily or Weekly (on a chosen weekday) at a time. The editor opens
+// pre-filled with whatever is currently scheduled, saves inline, and shows
+// success/failure feedback without leaving the screen. Disabling both jobs and
+// saving removes the managed jobs.
 
-type scheduleState int
+// fieldKind identifies an editable field within a job block (or the Save action).
+type fieldKind int
 
 const (
-	scForm scheduleState = iota
-	scDone
+	fEnabled fieldKind = iota
+	fCadence
+	fWeekday
+	fTime
+	fSave
 )
 
+// focusTarget is one stop in the flat navigation order. job is the index into
+// scheduleModel.jobs, or -1 for the Save action.
+type focusTarget struct {
+	job   int
+	field fieldKind
+}
+
+// jobForm is the editable state of one schedulable job (Upload or Clean).
+type jobForm struct {
+	kind    scheduler.Kind
+	enabled bool
+	weekly  bool
+	weekday time.Weekday
+	hour    int
+	min     int
+}
+
 type scheduleModel struct {
-	cfg  config.Config
-	form *huh.Form
+	cfg config.Config
 
-	uploadEnabled bool
-	uploadTime    string
-	cleanEnabled  bool
-	cleanTime     string
+	jobs    [2]jobForm // index 0 = Upload, 1 = Clean
+	focus   int        // index into fields()
+	editBuf string     // in-progress digit entry for the focused Time field
 
-	state   scheduleState
-	status  string
+	current []scheduler.Job // what is actually scheduled (for the summary)
+	status  string          // inline save feedback
 	failed  bool
-	current []scheduler.Job
-}
 
-// parseHHMM validates and splits a "HH:MM" time.
-func parseHHMM(s string) (hour, min int, err error) {
-	parts := strings.Split(strings.TrimSpace(s), ":")
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("use HH:MM")
-	}
-	hour, err = strconv.Atoi(parts[0])
-	if err != nil || hour < 0 || hour > 23 {
-		return 0, 0, fmt.Errorf("hour must be 0–23")
-	}
-	min, err = strconv.Atoi(parts[1])
-	if err != nil || min < 0 || min > 59 {
-		return 0, 0, fmt.Errorf("minute must be 0–59")
-	}
-	return hour, min, nil
+	width, height int
 }
-
-func validTime(s string) error { _, _, err := parseHHMM(s); return err }
 
 func newScheduleModel(cfg config.Config) scheduleModel {
 	current, _ := scheduler.Current(cfg.RemoteName)
 	s := scheduleModel{
-		cfg:        cfg,
-		uploadTime: "03:00",
-		cleanTime:  "05:00",
-		state:      scForm,
-		current:    current,
+		cfg:     cfg,
+		current: current,
+		jobs: [2]jobForm{
+			{kind: scheduler.Upload, weekly: false, weekday: time.Sunday, hour: 3, min: 0},
+			{kind: scheduler.Clean, weekly: true, weekday: time.Sunday, hour: 5, min: 0},
+		},
 	}
-	s.form = huh.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().Key("up").Title("Schedule daily upload?").Value(&s.uploadEnabled),
-			huh.NewInput().Key("uptime").Title("Upload time (HH:MM)").
-				Validate(validTime).Value(&s.uploadTime),
-		),
-		huh.NewGroup(
-			huh.NewConfirm().Key("cl").Title("Schedule weekly clean (Sundays)?").Value(&s.cleanEnabled),
-			huh.NewInput().Key("cltime").Title("Clean time (HH:MM)").
-				Validate(validTime).Value(&s.cleanTime),
-		),
-	).WithShowHelp(false)
+	// Pre-fill the editor from the active schedule so it reflects reality.
+	for _, j := range current {
+		idx := 0
+		if j.Kind == scheduler.Clean {
+			idx = 1
+		}
+		jf := jobForm{kind: j.Kind, enabled: true, weekly: j.Weekly, weekday: j.Weekday, hour: j.Hour, min: j.Min}
+		if j.Hour < 0 || j.Min < 0 { // a backend that couldn't recover the time
+			jf.hour, jf.min = s.jobs[idx].hour, s.jobs[idx].min
+		}
+		s.jobs[idx] = jf
+	}
 	return s
 }
 
-func (s scheduleModel) Init() tea.Cmd { return s.form.Init() }
+func (s scheduleModel) Init() tea.Cmd { return nil }
 
-func (s *scheduleModel) setSize(w, h int) {
-	s.form = s.form.WithWidth(w).WithHeight(h - 4)
+func (s *scheduleModel) setSize(w, h int) { s.width, s.height = w, h }
+
+// fields returns the ordered focus targets for the current state. The Weekday
+// field only appears for weekly jobs, so navigation and rendering stay in sync.
+func (s scheduleModel) fields() []focusTarget {
+	var ft []focusTarget
+	for i := range s.jobs {
+		ft = append(ft, focusTarget{i, fEnabled}, focusTarget{i, fCadence})
+		if s.jobs[i].weekly {
+			ft = append(ft, focusTarget{i, fWeekday})
+		}
+		ft = append(ft, focusTarget{i, fTime})
+	}
+	return append(ft, focusTarget{-1, fSave})
 }
 
-// apply registers the chosen presets with the OS scheduler.
+func (s *scheduleModel) clampFocus() {
+	if n := len(s.fields()); s.focus >= n {
+		s.focus = n - 1
+	}
+	if s.focus < 0 {
+		s.focus = 0
+	}
+}
+
+func (s scheduleModel) Update(msg tea.Msg) (scheduleModel, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return s, nil
+	}
+	cur := s.fields()[s.focus]
+
+	switch key.String() {
+	case "q":
+		return s, tea.Quit
+	case "esc":
+		return s, func() tea.Msg { return goBackMsg{} }
+	case "backspace":
+		// Delete a typed digit while editing a time; otherwise go back.
+		if cur.field == fTime && s.editBuf != "" {
+			s.editBuf = s.editBuf[:len(s.editBuf)-1]
+			return s, nil
+		}
+		return s, func() tea.Msg { return goBackMsg{} }
+	case "up", "k", "shift+tab":
+		s.commitFocusedTime()
+		s.focus--
+		s.clampFocus()
+		return s, nil
+	case "down", "j", "tab":
+		s.commitFocusedTime()
+		s.focus++
+		s.clampFocus()
+		return s, nil
+	case "left", "h":
+		s.changeField(cur, -1)
+		return s, nil
+	case "right", "l":
+		s.changeField(cur, +1)
+		return s, nil
+	case " ", "space":
+		if cur.job >= 0 {
+			s.jobs[cur.job].enabled = !s.jobs[cur.job].enabled
+		}
+		return s, nil
+	case "enter":
+		s.save()
+		return s, nil
+	}
+
+	// Digit entry builds a 4-digit HHMM time on the focused Time field.
+	if cur.field == fTime {
+		if d := key.String(); len(d) == 1 && d[0] >= '0' && d[0] <= '9' {
+			s.editBuf += d
+			if len(s.editBuf) > 4 {
+				s.editBuf = s.editBuf[len(s.editBuf)-4:]
+			}
+		}
+	}
+	return s, nil
+}
+
+// changeField applies a left/right (dir -1/+1) change to the focused field.
+func (s *scheduleModel) changeField(t focusTarget, dir int) {
+	if t.job < 0 {
+		return // Save action: nothing to change
+	}
+	j := &s.jobs[t.job]
+	switch t.field {
+	case fEnabled:
+		j.enabled = !j.enabled
+	case fCadence:
+		j.weekly = !j.weekly
+		s.clampFocus() // the Weekday field appears/disappears
+	case fWeekday:
+		j.weekday = time.Weekday(((int(j.weekday)+dir)%7 + 7) % 7)
+	case fTime:
+		s.commitFocusedTime()
+		j.addMinutes(dir * 5)
+	}
+}
+
+// addMinutes nudges the job's time by d minutes, wrapping within a day.
+func (j *jobForm) addMinutes(d int) {
+	total := ((j.hour*60+j.min+d)%(24*60) + 24*60) % (24 * 60)
+	j.hour, j.min = total/60, total%60
+}
+
+// commitFocusedTime applies any in-progress digit entry to the focused Time
+// field, then clears the buffer. A no-op when not editing a time.
+func (s *scheduleModel) commitFocusedTime() {
+	if s.editBuf == "" {
+		return
+	}
+	cur := s.fields()[s.focus]
+	if cur.field == fTime && cur.job >= 0 {
+		if h, m, ok := parseTimeBuf(s.editBuf); ok {
+			s.jobs[cur.job].hour, s.jobs[cur.job].min = h, m
+		}
+	}
+	s.editBuf = ""
+}
+
+// parseTimeBuf interprets 1–4 typed digits as a clock entry (right-aligned to
+// HHMM), clamping to a valid time.
+func parseTimeBuf(buf string) (hour, min int, ok bool) {
+	if buf == "" {
+		return 0, 0, false
+	}
+	for len(buf) < 4 {
+		buf = "0" + buf
+	}
+	buf = buf[len(buf)-4:]
+	h, _ := strconv.Atoi(buf[:2])
+	m, _ := strconv.Atoi(buf[2:])
+	if h > 23 {
+		h = 23
+	}
+	if m > 59 {
+		m = 59
+	}
+	return h, m, true
+}
+
+// buildJobs collects the enabled jobs as scheduler.Jobs for Apply.
+func (s scheduleModel) buildJobs() []scheduler.Job {
+	var jobs []scheduler.Job
+	for _, jf := range s.jobs {
+		if !jf.enabled {
+			continue
+		}
+		jobs = append(jobs, scheduler.Job{
+			Kind: jf.kind, Hour: jf.hour, Min: jf.min,
+			Weekly: jf.weekly, Weekday: jf.weekday,
+		})
+	}
+	return jobs
+}
+
+func (s scheduleModel) anyEnabled() bool {
+	return s.jobs[0].enabled || s.jobs[1].enabled
+}
+
+// apply registers the enabled jobs with the OS scheduler.
 func (s scheduleModel) apply() error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -99,87 +263,118 @@ func (s scheduleModel) apply() error {
 	if err != nil {
 		return err
 	}
-
-	var jobs []scheduler.Job
-	if s.uploadEnabled {
-		h, m, _ := parseHHMM(s.uploadTime)
-		jobs = append(jobs, scheduler.Job{Kind: scheduler.Upload, Hour: h, Min: m})
-	}
-	if s.cleanEnabled {
-		h, m, _ := parseHHMM(s.cleanTime)
-		jobs = append(jobs, scheduler.Job{Kind: scheduler.Clean, Hour: h, Min: m, Weekly: true})
-	}
-	return scheduler.Apply(s.cfg.RemoteName, jobs, exe, logPath)
+	return scheduler.Apply(s.cfg.RemoteName, s.buildJobs(), exe, logPath)
 }
 
-func (s scheduleModel) Update(msg tea.Msg) (scheduleModel, tea.Cmd) {
-	if s.state == scDone {
-		if key, ok := msg.(tea.KeyMsg); ok {
-			switch key.String() {
-			case "enter", "esc", "backspace":
-				return s, func() tea.Msg { return goBackMsg{} }
-			case "q":
-				return s, tea.Quit
-			}
-		}
-		return s, nil
+// save commits any typed time, applies the schedule, and records inline
+// feedback while staying on the editor (which is refreshed from the result).
+func (s *scheduleModel) save() {
+	s.commitFocusedTime()
+	if err := s.apply(); err != nil {
+		s.status, s.failed = fmt.Sprintf("Failed to update %s: %s", scheduler.Backend(), err.Error()), true
+		return
 	}
-
-	form, cmd := s.form.Update(msg)
-	if f, ok := form.(*huh.Form); ok {
-		s.form = f
+	if !s.anyEnabled() {
+		s.status, s.failed = "Schedule cleared — RCSS jobs removed.", false
+	} else {
+		s.status, s.failed = "Scheduled successfully", false
 	}
-
-	switch s.form.State {
-	case huh.StateCompleted:
-		if err := s.apply(); err != nil {
-			s.status, s.failed = fmt.Sprintf("Failed to update %s: %s", scheduler.Backend(), err.Error()), true
-		} else if !s.uploadEnabled && !s.cleanEnabled {
-			s.status, s.failed = "Schedule cleared — RCSS jobs removed.", false
-		} else {
-			s.status, s.failed = scheduler.Backend()+" updated.", false
-		}
-		s.current, _ = scheduler.Current(s.cfg.RemoteName)
-		s.state = scDone
-		return s, nil
-	case huh.StateAborted:
-		return s, func() tea.Msg { return goBackMsg{} }
-	}
-	return s, cmd
+	s.current, _ = scheduler.Current(s.cfg.RemoteName)
 }
 
 func (s scheduleModel) View() string {
-	if s.state == scDone {
-		var b strings.Builder
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(fmt.Sprintf("Schedule — %s (%s)", s.cfg.RemoteName, scheduler.Backend())))
+	b.WriteString("\n")
+	b.WriteString(subtitleStyle.Render(s.currentScheduleText()))
+	b.WriteString("\n\n")
+
+	for i := range s.jobs {
+		b.WriteString(s.renderJob(i))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	saveFocused := s.fields()[s.focus].field == fSave
+	save := "[ Save ]"
+	if saveFocused {
+		save = titleStyle.Render("‹ Save ›")
+	} else {
+		save = subtitleStyle.Render(save)
+	}
+	b.WriteString(save)
+	if s.status != "" {
+		b.WriteString("   ")
 		if s.failed {
 			b.WriteString(errorStyle.Render("✗ " + s.status))
 		} else {
-			b.WriteString(titleStyle.Render("✓ " + s.status))
+			b.WriteString(okStyle.Render("✓ " + s.status))
 		}
-		b.WriteString("\n\n")
-		b.WriteString(subtitleStyle.Render(s.currentScheduleText()))
-		return b.String()
 	}
-
-	header := titleStyle.Render("Schedule") + "\n" +
-		subtitleStyle.Render(s.currentScheduleText()) + "\n\n"
-	return header + s.form.View()
+	return b.String()
 }
 
-func (s scheduleModel) footerHint() string {
-	if s.state == scDone {
-		return "enter/esc back • q quit"
+// renderJob renders one bordered job block with the focused field highlighted.
+func (s scheduleModel) renderJob(i int) string {
+	jf := s.jobs[i]
+	cur := s.fields()[s.focus]
+	active := cur.job == i
+	focused := func(f fieldKind) bool { return active && cur.field == f }
+
+	check := "[ ]"
+	if jf.enabled {
+		check = "[x]"
 	}
-	return "tab/↑↓ navigate • enter confirm • esc cancel"
+	cad := "Daily"
+	if jf.weekly {
+		cad = "Weekly"
+	}
+
+	var lines []string
+	lines = append(lines, fieldValue(check+" Enabled", focused(fEnabled)))
+
+	cadence := "Cadence: " + fieldValue(cad, focused(fCadence))
+	if jf.weekly {
+		cadence += "  Day: " + fieldValue(wdShort(jf.weekday), focused(fWeekday))
+	}
+	lines = append(lines, cadence)
+
+	timeStr := fmt.Sprintf("%02d:%02d", jf.hour, jf.min)
+	if focused(fTime) && s.editBuf != "" {
+		timeStr = s.editBuf + "_"
+	}
+	lines = append(lines, "Time:    "+fieldValue(timeStr, focused(fTime)))
+
+	title := jf.kind.Title()
+	if !jf.enabled {
+		title += " (off)"
+	}
+	return paneStyle(active).Render(titleStyle.Render(title) + "\n" + strings.Join(lines, "\n"))
+}
+
+// fieldValue renders a focusable value, bracketing and highlighting it when
+// focused so the selection is obvious; padding keeps the width steady otherwise.
+func fieldValue(v string, focused bool) string {
+	if focused {
+		return titleStyle.Render("‹ " + v + " ›")
+	}
+	return "  " + v + "  "
+}
+
+// wdShort is the three-letter label for a weekday (e.g. "Wed").
+func wdShort(d time.Weekday) string { return d.String()[:3] }
+
+func (s scheduleModel) footerHint() string {
+	return "↑/↓ field • ←/→ change • space toggle • enter save • esc back"
 }
 
 // currentScheduleText summarizes the active account's managed jobs.
 func (s scheduleModel) currentScheduleText() string {
 	if len(s.current) == 0 {
-		return fmt.Sprintf("Current: no jobs scheduled for %s (%s).", s.cfg.RemoteName, scheduler.Backend())
+		return fmt.Sprintf("Currently scheduled: none for %s (%s).", s.cfg.RemoteName, scheduler.Backend())
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Scheduled for %s (%s):", s.cfg.RemoteName, scheduler.Backend())
+	b.WriteString("Currently scheduled:")
 	for _, j := range s.current {
 		fmt.Fprintf(&b, "\n  • %s — %s at %s", j.Kind.Title(), j.Cadence(), j.Time())
 	}
