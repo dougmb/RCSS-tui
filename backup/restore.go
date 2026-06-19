@@ -78,7 +78,7 @@ type RestoreOptions struct {
 	// DryRun previews the download without writing files.
 	DryRun bool
 	// OutputPath overrides the download destination. When empty, the file is
-	// restored to <SourceRoot>/<project>/.
+	// restored to <RestoreDestination or SourceRoot>/<project>/.
 	OutputPath string
 }
 
@@ -93,14 +93,9 @@ func Restore(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Log
 
 	localPath := opts.OutputPath
 	if localPath == "" {
-		if cfg.SourceRoot == "" {
-			return fmt.Errorf("config incomplete: source_root not set")
-		}
-		// Root-level files restore into SourceRoot; project files into a
-		// matching sub-folder.
-		localPath = cfg.SourceRoot
-		if project != "" {
-			localPath = joinRemoteLocal(cfg.SourceRoot, project)
+		var err error
+		if localPath, err = RestoreTarget(cfg, project); err != nil {
+			return err
 		}
 	}
 	if err := os.MkdirAll(localPath, 0o755); err != nil {
@@ -123,6 +118,26 @@ func Restore(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Log
 
 	log.Infof("Procedure completed.")
 	return nil
+}
+
+// RestoreTarget returns the default local folder a project's files restore to:
+// <RestoreDestination or SourceRoot>/<project> (root-level files, project == "",
+// land directly in the base). The configured restore destination wins;
+// otherwise it falls back to the backup source so existing configs keep their
+// previous behavior. The TUI uses this to pre-fill the (editable) restore
+// destination, so the confirm field matches what Restore would do.
+func RestoreTarget(cfg config.Config, project string) (string, error) {
+	base := cfg.RestoreDestination
+	if base == "" {
+		base = cfg.SourceRoot
+	}
+	if base == "" {
+		return "", fmt.Errorf("config incomplete: set a restore destination or source_root")
+	}
+	if project != "" {
+		return joinRemoteLocal(base, project), nil
+	}
+	return base, nil
 }
 
 // joinRemoteLocal joins a local base path with a project folder, keeping it

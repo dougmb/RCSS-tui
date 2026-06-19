@@ -20,9 +20,15 @@ go build -o rcss .    # produce the binary
 ./rcss                       # open the TUI
 ./rcss upload [-v] [-p]      # headless upload (what cron runs)
 ./rcss clean [-v] [--dry-run] [--force]
+
+go test ./...                        # all tests
+go test -race ./...                  # what CI runs (Linux/macOS/Windows matrix)
+go test -run TestLastRun ./backup/   # a single test
 ```
 
-Tests are minimal so far: `tui/app_test.go` drives the root model headless (the pattern below) to cover navigation, the help overlay, and the rclone-missing lock — run `go test ./...`. Beyond that, verify changes by building/vetting and by driving the relevant package with a **fake `rclone`** on the PATH (a script that echoes canned `lsf`/`copy`/`delete` output) — this is how the backup logic and TUI flows are exercised without a real remote. For TUI work, sub-models can be driven headless by feeding `tea.Msg`s into `Update` and inspecting `View()`.
+Tests are light but spread across three packages: `tui/app_test.go` drives the root model headless (the pattern below — navigation, help overlay, rclone-missing lock, Clean force double-confirm, Settings save), `backup/status_test.go` covers `LastRun` block parsing, and `config/store_test.go` covers in-memory account ops and per-account log resolution (no disk I/O, so the real config is never touched). CI (`.github/workflows/ci.yml`) runs `go build`, `go vet`, and `go test -race ./...` on all three OSes, so keep code portable and race-clean. Beyond the unit tests, verify changes by building/vetting and by driving the relevant package with a **fake `rclone`** on the PATH (a script that echoes canned `lsf`/`copy`/`delete` output) — this is how the backup logic and TUI flows are exercised without a real remote. For TUI work, sub-models can be driven headless by feeding `tea.Msg`s into `Update` and inspecting `View()`.
+
+Releases are cut by goreleaser (`.goreleaser.yaml`) from `v*` tags via `.github/workflows/release.yml` — don't hand-build release artifacts.
 
 ## Architecture
 

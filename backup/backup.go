@@ -16,11 +16,11 @@ import (
 )
 
 // remoteDest returns "<remote>/<destination>" — the base remote path holding
-// all project folders, e.g. "douglas:/Backups". Mirrors the scripts'
-// "${RCLONE_REMOTE}/${DRIVE_DESTINATION}" concatenation (the remote name keeps
-// its trailing colon).
+// all project folders, e.g. "douglas:/Backups", or just "douglas:" when the
+// destination is empty (backups at the account root). Delegates to
+// config.RemoteBase so display and path-building stay consistent.
 func remoteDest(cfg config.Config) string {
-	return joinRemote(cfg.RemoteName, cfg.RemoteDestination)
+	return cfg.RemoteBase()
 }
 
 // joinRemote joins remote path segments with single slashes, trimming any

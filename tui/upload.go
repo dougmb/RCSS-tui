@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/dougmb/rcss-tui/backup"
@@ -29,22 +30,43 @@ type uploadModel struct {
 	cfg config.Config
 	rc  *rclone.Client
 
-	state   uploadState
-	spinner spinner.Model
-	stream  *opStream
-	output  []string
-	result  backup.UploadResult
-	err     error
-	height  int
+	state uploadState
+	// destInput edits the remote destination folder before the run. It is
+	// pre-filled from the active config but the edit applies to this run only —
+	// Settings stays the source of truth (it is not written back here).
+	destInput textinput.Model
+	spinner   spinner.Model
+	stream    *opStream
+	output    []string
+	result    backup.UploadResult
+	err       error
+	width     int
+	height    int
 }
 
 func newUploadModel(cfg config.Config, rc *rclone.Client) uploadModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	return uploadModel{cfg: cfg, rc: rc, spinner: sp, state: upIdle}
+
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.Placeholder = "(account root)"
+	ti.SetValue(cfg.RemoteDestination)
+	ti.Focus()
+
+	return uploadModel{cfg: cfg, rc: rc, spinner: sp, state: upIdle, destInput: ti}
 }
 
-func (u *uploadModel) setHeight(h int) { u.height = h }
+func (u uploadModel) Init() tea.Cmd { return textinput.Blink }
+
+func (u *uploadModel) setSize(w, h int) {
+	u.width, u.height = w, h
+	iw := w - 2
+	if iw < 10 {
+		iw = 10
+	}
+	u.destInput.Width = iw
+}
 
 // start launches backup.Upload in a goroutine, streaming its output.
 func (u uploadModel) start() (uploadModel, tea.Cmd) {
@@ -89,6 +111,22 @@ func (u uploadModel) Update(msg tea.Msg) (uploadModel, tea.Cmd) {
 		return u, cmd
 
 	case tea.KeyMsg:
+		// On the idle screen the destination field has focus, so most keys are
+		// typed into it; only enter (confirm + start) and esc (back) are control
+		// keys here. q/backspace must reach the input so folder names can contain
+		// them. (ctrl+c still quits — the root handles it before we get here.)
+		if u.state == upIdle {
+			switch msg.String() {
+			case "enter":
+				u.cfg.RemoteDestination = strings.TrimSpace(u.destInput.Value())
+				return u.start()
+			case "esc":
+				return u, func() tea.Msg { return goBackMsg{} }
+			}
+			var cmd tea.Cmd
+			u.destInput, cmd = u.destInput.Update(msg)
+			return u, cmd
+		}
 		switch msg.String() {
 		case "q":
 			return u, tea.Quit
@@ -98,10 +136,7 @@ func (u uploadModel) Update(msg tea.Msg) (uploadModel, tea.Cmd) {
 			}
 			return u, func() tea.Msg { return goBackMsg{} }
 		case "enter":
-			switch u.state {
-			case upIdle:
-				return u.start()
-			case upDone, upError:
+			if u.state == upDone || u.state == upError {
 				return u, func() tea.Msg { return goBackMsg{} }
 			}
 		}
@@ -119,9 +154,13 @@ func (u uploadModel) View() string {
 		b.WriteString("\n\n")
 		b.WriteString(subtitleStyle.Render("Source: " + u.cfg.SourceRoot))
 		b.WriteString("\n")
-		b.WriteString(subtitleStyle.Render(fmt.Sprintf("Remote: %s/%s", u.cfg.RemoteName, u.cfg.RemoteDestination)))
+		b.WriteString(subtitleStyle.Render("Remote: " + u.cfg.RemoteName))
 		b.WriteString("\n")
 		b.WriteString(lastBackupLine(u.cfg))
+		b.WriteString("\n\n")
+		b.WriteString(subtitleStyle.Render("Destination folder (blank = account root):"))
+		b.WriteString("\n")
+		b.WriteString(u.destInput.View())
 		b.WriteString("\n\n")
 		b.WriteString("Press enter to start the backup.")
 		return b.String()
@@ -140,7 +179,7 @@ func (u uploadModel) View() string {
 func (u uploadModel) footerHint() string {
 	switch u.state {
 	case upIdle:
-		return "enter start • esc back • q quit"
+		return "edit destination • enter start • esc back"
 	case upRunning:
 		return "backing up… • q quit"
 	default:

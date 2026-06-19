@@ -145,7 +145,7 @@ func (m *Model) resizeDetail() {
 	m.menu.SetSize(sidebarWidth-2, h-1)
 	m.account.setSize(w, h)
 	m.backups.setSize(w, h)
-	m.upload.setHeight(h)
+	m.upload.setSize(w, h)
 	m.clean.setHeight(h)
 	m.settings.setSize(w, h)
 	m.schedule.setSize(w, h)
@@ -354,8 +354,8 @@ func (m Model) enterScreen(s screen) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.backups.loadProjects(), m.backups.spinner.Tick)
 	case screenUpload:
 		m.upload = newUploadModel(m.cfg, m.rc)
-		m.upload.setHeight(m.detailH)
-		return m, nil
+		m.upload.setSize(m.contentW(), m.detailH)
+		return m, m.upload.Init()
 	case screenClean:
 		// Clean opens on an intro/options screen explaining what it deletes and
 		// exposing the Force toggle; the dry-run is launched from there.
@@ -533,7 +533,7 @@ func (m Model) previewView() string {
 		body += "\n\n" + infoLine("Backup source", m.cfg.SourceRoot)
 	case screenUpload, screenClean, screenBackups:
 		body += "\n\n" + infoLine("Remote", m.cfg.RemoteName) +
-			"\n" + infoLine("Destination", m.cfg.RemoteDestination)
+			"\n" + infoLine("Destination", destinationLabel(m.cfg.RemoteDestination))
 	}
 
 	if m.saveErr != nil {
@@ -549,6 +549,15 @@ func infoLine(label, value string) string {
 		value = "—"
 	}
 	return subtitleStyle.Render(label+": ") + value
+}
+
+// destinationLabel renders a remote destination for display, naming the empty
+// case so users see where root-level backups land.
+func destinationLabel(dest string) string {
+	if dest == "" {
+		return "(account root)"
+	}
+	return dest
 }
 
 // accountBadge renders the active-account indicator shown atop the sidebar,

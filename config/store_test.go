@@ -47,6 +47,43 @@ func TestStoreUpsertActiveRemove(t *testing.T) {
 	}
 }
 
+// TestRemoteBase checks the remote base path renders cleanly, including the
+// empty-destination (account root) case and stray slashes.
+func TestRemoteBase(t *testing.T) {
+	cases := []struct {
+		name, remote, dest, want string
+	}{
+		{"root", "drive:", "", "drive:"},
+		{"subfolder", "drive:", "Backups", "drive:/Backups"},
+		{"stray slashes", "drive:/", "/Backups/", "drive:/Backups"},
+	}
+	for _, tc := range cases {
+		got := Config{RemoteName: tc.remote, RemoteDestination: tc.dest}.RemoteBase()
+		if got != tc.want {
+			t.Errorf("%s: RemoteBase()=%q want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestValidateAllowsRootDestination checks an empty RemoteDestination (account
+// root) is valid, while RemoteName and SourceRoot stay required.
+func TestValidateAllowsRootDestination(t *testing.T) {
+	// Empty destination = account root, so a config with only remote + source set
+	// must validate (NewAccount now defaults the destination to empty).
+	if err := (Config{RemoteName: "drive:", SourceRoot: "/data"}).Validate(); err != nil {
+		t.Errorf("empty destination should be valid: %v", err)
+	}
+	if err := (Config{SourceRoot: "/data"}).Validate(); err == nil {
+		t.Error("missing remote_name should fail validation")
+	}
+	if err := (Config{RemoteName: "drive:"}).Validate(); err == nil {
+		t.Error("missing source_root should fail validation")
+	}
+	if err := (Config{RemoteName: "drive:", SourceRoot: "/data", RetentionDays: -1}).Validate(); err == nil {
+		t.Error("negative retention should fail validation")
+	}
+}
+
 // TestResolveLogFilePerAccount checks each account gets an isolated default log
 // and that an explicit LogFile is honored.
 func TestResolveLogFilePerAccount(t *testing.T) {

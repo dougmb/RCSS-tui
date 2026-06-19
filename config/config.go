@@ -59,6 +59,11 @@ type Config struct {
 	// IgnoredFolders are sub-folders of SourceRoot never treated as projects.
 	IgnoredFolders []string `toml:"ignored_folders"`
 
+	// RestoreDestination is the local folder restored files are written to.
+	// Empty falls back to SourceRoot (see backup.Restore), so existing configs
+	// keep their previous behavior.
+	RestoreDestination string `toml:"restore_destination"`
+
 	// LogFile is the path to the append-only backup log. Empty means a per-account
 	// default location is used (see ResolveLogFile).
 	LogFile string `toml:"log_file"`
@@ -72,12 +77,13 @@ type Store struct {
 	Accounts []Config `toml:"accounts"`
 }
 
-// Default returns a Config populated with the recommended defaults: 1 day of
-// local retention, 15 days remote, a 2-day cleanup safety window, with
-// delete-after-upload and skip-dotfiles disabled.
+// Default returns a Config populated with the recommended defaults: backups go
+// to the account root (empty RemoteDestination), 1 day of local retention,
+// 15 days remote, a 2-day cleanup safety window, with delete-after-upload and
+// skip-dotfiles disabled.
 func Default() Config {
 	return Config{
-		RemoteDestination:       "Backups",
+		RemoteDestination:       "",
 		RetentionDays:           1,
 		RemoteRetentionDays:     15,
 		RemoteCleanupSafetyDays: 2,
@@ -91,6 +97,20 @@ func NewAccount(remote string) Config {
 	c := Default()
 	c.RemoteName = remote
 	return c
+}
+
+// RemoteBase returns the remote path holding the project folders, for display
+// and path-building: "<remote>/<destination>", or just "<remote>" when the
+// destination is empty (backups at the account root). The remote name keeps its
+// trailing colon; stray slashes are trimmed so the root renders without a
+// trailing "/".
+func (c Config) RemoteBase() string {
+	base := strings.TrimRight(c.RemoteName, "/")
+	dest := strings.Trim(c.RemoteDestination, "/")
+	if dest == "" {
+		return base
+	}
+	return base + "/" + dest
 }
 
 // --- Store operations ---
@@ -281,8 +301,8 @@ func (s *Store) Save() error {
 }
 
 // Validate checks that the required fields are set. It mirrors the original
-// scripts, which abort when BACKUP_ROOT, RCLONE_REMOTE, or RETENTION_DAYS are
-// missing/invalid.
+// scripts, which abort when BACKUP_ROOT or RCLONE_REMOTE are missing/invalid.
+// RemoteDestination may be empty: that means backups go to the account root.
 func (c Config) Validate() error {
 	var missing []string
 	if c.RemoteName == "" {
@@ -290,9 +310,6 @@ func (c Config) Validate() error {
 	}
 	if c.SourceRoot == "" {
 		missing = append(missing, "source_root")
-	}
-	if c.RemoteDestination == "" {
-		missing = append(missing, "remote_destination")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config incomplete: %v not set", missing)

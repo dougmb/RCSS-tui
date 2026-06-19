@@ -22,6 +22,7 @@ type settingsModel struct {
 	form *huh.Form
 
 	remoteName, syncRoot, driveDest        string
+	restoreDest                            string
 	retention, remoteRetention, safetyDays string
 	deleteAfter, skipDotfiles              bool
 	ignored, logFile                       string
@@ -47,6 +48,7 @@ func newSettingsModel(cfg config.Config) settingsModel {
 		remoteName:      cfg.RemoteName,
 		syncRoot:        cfg.SourceRoot,
 		driveDest:       cfg.RemoteDestination,
+		restoreDest:     cfg.RestoreDestination,
 		retention:       strconv.Itoa(cfg.RetentionDays),
 		remoteRetention: strconv.Itoa(cfg.RemoteRetentionDays),
 		safetyDays:      strconv.Itoa(cfg.RemoteCleanupSafetyDays),
@@ -64,7 +66,9 @@ func newSettingsModel(cfg config.Config) settingsModel {
 			huh.NewInput().Key("root").Title("Backup source").
 				Description("Local folder holding the projects").Value(&s.syncRoot),
 			huh.NewInput().Key("dest").Title("Destination folder").
-				Description("Folder on the remote where backups are stored").Value(&s.driveDest),
+				Description("Folder on the remote where backups are stored (blank = account root)").Value(&s.driveDest),
+			huh.NewInput().Key("restore").Title("Restore destination (local)").
+				Description("Where restored files are written (blank = backup source folder)").Value(&s.restoreDest),
 		),
 		huh.NewGroup(
 			huh.NewInput().Key("ret").Title("Local retention (days)").
@@ -101,6 +105,7 @@ func (s settingsModel) toConfig() config.Config {
 		RemoteName:              strings.TrimSpace(s.remoteName),
 		SourceRoot:              strings.TrimSpace(s.syncRoot),
 		RemoteDestination:       strings.TrimSpace(s.driveDest),
+		RestoreDestination:      strings.TrimSpace(s.restoreDest),
 		RetentionDays:           atoi(s.retention),
 		RemoteRetentionDays:     atoi(s.remoteRetention),
 		RemoteCleanupSafetyDays: atoi(s.safetyDays),
@@ -155,7 +160,7 @@ func (s settingsModel) View() string {
 	b.WriteString("\n\n")
 	b.WriteString(infoLine("Remote", cfg.RemoteName) + "\n")
 	b.WriteString(infoLine("Backup source", cfg.SourceRoot) + "\n")
-	b.WriteString(infoLine("Destination", cfg.RemoteDestination) + "\n")
+	b.WriteString(infoLine("Destination", destinationLabel(cfg.RemoteDestination)) + "\n")
 	b.WriteString(subtitleStyle.Render(fmt.Sprintf("Retention: %dd local • %dd remote • %dd safety",
 		cfg.RetentionDays, cfg.RemoteRetentionDays, cfg.RemoteCleanupSafetyDays)))
 	return b.String()

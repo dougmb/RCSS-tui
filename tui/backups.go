@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/dougmb/rcss-tui/backup"
@@ -24,6 +25,7 @@ const (
 	bsProjects
 	bsLoadingFiles
 	bsFiles
+	bsConfirmDest
 	bsRestoring
 	bsDone
 	bsError
@@ -70,6 +72,12 @@ type backupsModel struct {
 	projects        list.Model
 	files           list.Model
 	selectedProject string
+	selectedFile    string
+
+	// destInput edits the local restore destination before the download. It is
+	// pre-filled with backup.RestoreTarget (the configured restore destination or
+	// the backup source) and the edit applies to this run only.
+	destInput textinput.Model
 
 	spinner spinner.Model
 	stream  *opStream
@@ -91,13 +99,17 @@ func newBackupsModel(cfg config.Config, rc *rclone.Client) backupsModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
+	ti := textinput.New()
+	ti.Prompt = ""
+
 	return backupsModel{
-		cfg:      cfg,
-		rc:       rc,
-		state:    bsLoadingProjects,
-		projects: mkList("Select a backup (📁 folder or 📄 file)"),
-		files:    mkList("Select file to restore"),
-		spinner:  sp,
+		cfg:       cfg,
+		rc:        rc,
+		state:     bsLoadingProjects,
+		projects:  mkList("Select a backup (📁 folder or 📄 file)"),
+		files:     mkList("Select file to restore"),
+		destInput: ti,
+		spinner:   sp,
 	}
 }
 
@@ -105,6 +117,11 @@ func (b *backupsModel) setSize(w, h int) {
 	b.height = h
 	b.projects.SetSize(w, h)
 	b.files.SetSize(w, h)
+	iw := w - 2
+	if iw < 10 {
+		iw = 10
+	}
+	b.destInput.Width = iw
 }
 
 // filtering reports whether either list is currently capturing filter text, so
@@ -133,8 +150,25 @@ func (b backupsModel) loadFiles() tea.Cmd {
 	}
 }
 
+// enterConfirm moves to the destination-confirm step, pre-filling the editable
+// local path with what backup.Restore would use by default (the configured
+// restore destination or the backup source, plus the project sub-folder).
+func (b backupsModel) enterConfirm() (backupsModel, tea.Cmd) {
+	target, err := backup.RestoreTarget(b.cfg, b.selectedProject)
+	if err != nil {
+		b.state, b.err = bsError, err
+		return b, nil
+	}
+	b.destInput.SetValue(target)
+	b.destInput.CursorEnd()
+	b.destInput.Focus()
+	b.state = bsConfirmDest
+	return b, textinput.Blink
+}
+
 // startRestore launches backup.Restore in a goroutine, streaming its output.
-func (b backupsModel) startRestore(file string) (backupsModel, tea.Cmd) {
+// outputPath is the confirmed local destination for this run.
+func (b backupsModel) startRestore(file, outputPath string) (backupsModel, tea.Cmd) {
 	b.state = bsRestoring
 	b.output = nil
 	stream := newOpStream()
@@ -146,7 +180,7 @@ func (b backupsModel) startRestore(file string) (backupsModel, tea.Cmd) {
 		// restoreBackup.sh; the sink streams every line to the UI.
 		log, _ := backup.NewLogger("", stream.sink(), false)
 		err := backup.Restore(context.Background(), cfg, rc, log, project, file,
-			backup.RestoreOptions{ShowProgress: true})
+			backup.RestoreOptions{ShowProgress: true, OutputPath: outputPath})
 		log.Close()
 		stream.finish(err)
 	}()
@@ -219,6 +253,26 @@ func (b backupsModel) handleKey(msg tea.KeyMsg) (backupsModel, tea.Cmd) {
 		}
 	}
 
+	// The destination-confirm step has a focused text field: forward typing to
+	// it; only enter (restore) and esc (step back) are control keys. (ctrl+c
+	// still quits — the root handles it before we get here.)
+	if b.state == bsConfirmDest {
+		switch msg.String() {
+		case "enter":
+			return b.startRestore(b.selectedFile, strings.TrimSpace(b.destInput.Value()))
+		case "esc":
+			if b.selectedProject != "" {
+				b.state = bsFiles
+			} else {
+				b.state = bsProjects
+			}
+			return b, nil
+		}
+		var cmd tea.Cmd
+		b.destInput, cmd = b.destInput.Update(msg)
+		return b, cmd
+	}
+
 	switch msg.String() {
 	case "q":
 		return b, tea.Quit
@@ -239,13 +293,16 @@ func (b backupsModel) handleKey(msg tea.KeyMsg) (backupsModel, tea.Cmd) {
 					b.state = bsLoadingFiles
 					return b, tea.Batch(b.loadFiles(), b.spinner.Tick)
 				}
-				// A loose file at the destination root: restore it directly.
+				// A loose file at the destination root: confirm the local
+				// destination, then restore.
 				b.selectedProject = ""
-				return b.startRestore(it.name)
+				b.selectedFile = it.name
+				return b.enterConfirm()
 			}
 		case bsFiles:
 			if it, ok := b.files.SelectedItem().(stringItem); ok {
-				return b.startRestore(string(it))
+				b.selectedFile = string(it)
+				return b.enterConfirm()
 			}
 		case bsDone, bsError:
 			return b, func() tea.Msg { return goBackMsg{} }
@@ -283,6 +340,22 @@ func (b backupsModel) View() string {
 		return b.spinner.View() + " Loading files for " + b.selectedProject + "…"
 	case bsFiles:
 		return b.files.View()
+	case bsConfirmDest:
+		var sb strings.Builder
+		sb.WriteString(titleStyle.Render("Restore — confirm destination"))
+		sb.WriteString("\n\n")
+		label := b.selectedFile
+		if b.selectedProject != "" {
+			label = b.selectedProject + "/" + b.selectedFile
+		}
+		sb.WriteString(subtitleStyle.Render("File: " + label))
+		sb.WriteString("\n\n")
+		sb.WriteString(subtitleStyle.Render("Restore to (local folder):"))
+		sb.WriteString("\n")
+		sb.WriteString(b.destInput.View())
+		sb.WriteString("\n\n")
+		sb.WriteString("Press enter to restore.")
+		return sb.String()
 	case bsRestoring:
 		return b.viewOutput(b.spinner.View() + " Restoring…")
 	case bsDone:
@@ -312,6 +385,8 @@ func (b backupsModel) footerHint() string {
 	switch b.state {
 	case bsProjects, bsFiles:
 		return "↑/↓ move • enter select • / filter • esc back • q quit"
+	case bsConfirmDest:
+		return "edit folder • enter restore • esc back"
 	case bsDone, bsError:
 		return "enter/esc back • q quit"
 	default:

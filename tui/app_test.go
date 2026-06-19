@@ -41,8 +41,8 @@ func TestMissingRcloneOpensAndWarns(t *testing.T) {
 // rclone is missing locks it with an install hint instead of erroring out.
 func TestRcloneMissingLocksScreen(t *testing.T) {
 	m := sized()
-	// '4' jumps to Upload (4th menu item), which requires rclone.
-	tm, _ := m.Update(keyRune('4'))
+	// '3' jumps to Back Up Now (3rd menu item), which requires rclone.
+	tm, _ := m.Update(keyRune('3'))
 	m = tm.(Model)
 	if m.screen != screenUpload {
 		t.Fatalf("expected screenUpload, got %v", m.screen)

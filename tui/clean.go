@@ -55,7 +55,7 @@ func (c *cleanModel) setHeight(h int) { c.height = h }
 
 // remoteDest renders the remote base path for display.
 func (c cleanModel) remoteDest() string {
-	return c.cfg.RemoteName + "/" + c.cfg.RemoteDestination
+	return c.cfg.RemoteBase()
 }
 
 // localRule describes what Back Up Now does to local files, for the intro text.
