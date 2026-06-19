@@ -17,13 +17,13 @@ func TestStoreUpsertActiveRemove(t *testing.T) {
 
 	// Upsert replaces by key (RemoteName) rather than duplicating.
 	c, _ := s.Get("drive:")
-	c.SourceRoot = "/data"
+	c.SourceFolders = []string{"/data"}
 	s.Upsert(c)
 	if len(s.Accounts) != 2 {
 		t.Fatalf("upsert should replace; got %d accounts", len(s.Accounts))
 	}
-	if got, ok := s.Get("drive:"); !ok || got.SourceRoot != "/data" {
-		t.Fatalf("expected updated SourceRoot, got %+v ok=%v", got, ok)
+	if got, ok := s.Get("drive:"); !ok || len(got.SourceFolders) != 1 || got.SourceFolders[0] != "/data" {
+		t.Fatalf("expected updated SourceFolders, got %+v ok=%v", got, ok)
 	}
 
 	s.SetActive("work:")
@@ -66,21 +66,49 @@ func TestRemoteBase(t *testing.T) {
 }
 
 // TestValidateAllowsRootDestination checks an empty RemoteDestination (account
-// root) is valid, while RemoteName and SourceRoot stay required.
+// root) is valid, while RemoteName and SourceFolders stay required.
 func TestValidateAllowsRootDestination(t *testing.T) {
+	src := []string{"/data"}
 	// Empty destination = account root, so a config with only remote + source set
 	// must validate (NewAccount now defaults the destination to empty).
-	if err := (Config{RemoteName: "drive:", SourceRoot: "/data"}).Validate(); err != nil {
+	if err := (Config{RemoteName: "drive:", SourceFolders: src}).Validate(); err != nil {
 		t.Errorf("empty destination should be valid: %v", err)
 	}
-	if err := (Config{SourceRoot: "/data"}).Validate(); err == nil {
+	if err := (Config{SourceFolders: src}).Validate(); err == nil {
 		t.Error("missing remote_name should fail validation")
 	}
 	if err := (Config{RemoteName: "drive:"}).Validate(); err == nil {
-		t.Error("missing source_root should fail validation")
+		t.Error("missing source_folders should fail validation")
 	}
-	if err := (Config{RemoteName: "drive:", SourceRoot: "/data", RetentionDays: -1}).Validate(); err == nil {
+	if err := (Config{RemoteName: "drive:", SourceFolders: src, RetentionDays: -1}).Validate(); err == nil {
 		t.Error("negative retention should fail validation")
+	}
+}
+
+// TestMigrateSourceRoots checks the legacy single source_root is folded into the
+// SourceFolders list (and cleared) on migration.
+func TestMigrateSourceRoots(t *testing.T) {
+	s := Store{Accounts: []Config{
+		{RemoteName: "drive:", SourceRoot: "/legacy"},                          // migrates
+		{RemoteName: "keep:", SourceFolders: []string{"/a"}, SourceRoot: "/b"}, // SourceFolders wins, root cleared
+		{RemoteName: "none:"},                                                  // unchanged
+	}}
+	if !s.migrateSourceRoots() {
+		t.Fatal("expected migration to report a change")
+	}
+	if got := s.Accounts[0].SourceFolders; len(got) != 1 || got[0] != "/legacy" {
+		t.Errorf("drive: SourceFolders = %v, want [/legacy]", got)
+	}
+	if got := s.Accounts[1].SourceFolders; len(got) != 1 || got[0] != "/a" {
+		t.Errorf("keep: SourceFolders should be preserved, got %v", got)
+	}
+	for i := range s.Accounts {
+		if s.Accounts[i].SourceRoot != "" {
+			t.Errorf("account %d still has SourceRoot %q", i, s.Accounts[i].SourceRoot)
+		}
+	}
+	if s.migrateSourceRoots() {
+		t.Error("a second migration should be a no-op")
 	}
 }
 

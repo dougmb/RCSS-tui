@@ -8,6 +8,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -22,11 +23,21 @@ import (
 // Minimum terminal size. Below this the UI renders only a centered warning.
 const (
 	MinWidth  = 80
-	MinHeight = 12
+	MinHeight = 14
 )
 
 // sidebarWidth is the inner content width of the menu pane.
 const sidebarWidth = 24
+
+// Layout boxes. The left column stacks a small header box (app name + account)
+// over the menu; the right column stacks the detail box over a tooltip box that
+// explains the focused item. Content heights exclude each box's 2 border rows.
+const (
+	headerContentH  = 2 // "RCSS" + active account
+	tooltipContentH = 3 // wrapped explanation of the focused item
+	headerBoxH      = headerContentH + 2
+	tooltipBoxH     = tooltipContentH + 2
+)
 
 // screen identifies the detail-pane sub-view selected from the menu.
 type screen int
@@ -61,7 +72,8 @@ type Model struct {
 
 	width, height int
 	detailW       int
-	detailH       int
+	detailH       int // content height of the top-right detail box
+	menuH         int // content height of the left-side menu box
 	ready         bool
 
 	focus  focusArea
@@ -74,7 +86,7 @@ type Model struct {
 
 	menu     list.Model
 	account  accountModel
-	folder   folderModel
+	sources  sourcesModel
 	backups  backupsModel
 	upload   uploadModel
 	clean    cleanModel
@@ -113,11 +125,11 @@ func New(store *config.Store, rc *rclone.Client) Model {
 	}
 }
 
-// folderStart is the directory the picker opens at: the configured SourceRoot
-// when set, otherwise the user's home directory.
+// folderStart is the directory the add-folder picker opens at: the parent of the
+// first configured source folder when set, otherwise the user's home directory.
 func (m Model) folderStart() string {
-	if m.cfg.SourceRoot != "" {
-		return m.cfg.SourceRoot
+	if len(m.cfg.SourceFolders) > 0 {
+		return filepath.Dir(m.cfg.SourceFolders[0])
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return home
@@ -141,8 +153,9 @@ func (m Model) contentW() int {
 // sub-model and the sidebar.
 func (m *Model) resizeDetail() {
 	w, h := m.contentW(), m.detailH
-	// The sidebar reserves one row for the active-account badge above the menu.
-	m.menu.SetSize(sidebarWidth-2, h-1)
+	// The account badge now lives in its own header box, so the menu box uses its
+	// full content height.
+	m.menu.SetSize(sidebarWidth-2, m.menuH)
 	m.account.setSize(w, h)
 	m.backups.setSize(w, h)
 	m.upload.setSize(w, h)
@@ -150,8 +163,7 @@ func (m *Model) resizeDetail() {
 	m.settings.setSize(w, h)
 	m.schedule.setSize(w, h)
 	m.logs.setSize(w, h)
-	// The picker keeps a 3-line header inside the detail pane.
-	m.folder.setHeight(h - 4)
+	m.sources.setSize(w, h)
 }
 
 // Update implements tea.Model.
@@ -161,15 +173,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
-		// Pane borders take 2 cols each, plus a 1-col gap; the footer takes 1
-		// row and borders take 2 rows.
+		// Pane borders take 2 cols each, plus a 1-col gap. Vertically the footer
+		// takes 1 row; the left column is header box + menu box, the right column
+		// is detail box + tooltip box — each box paying 2 rows of border.
 		m.detailW = m.width - sidebarWidth - 5
 		if m.detailW < 1 {
 			m.detailW = 1
 		}
-		m.detailH = m.height - 3
+		panelH := m.height - 1 // minus the footer row
+		m.detailH = panelH - tooltipBoxH - 2
+		m.menuH = panelH - headerBoxH - 2
 		if m.detailH < 1 {
 			m.detailH = 1
+		}
+		if m.menuH < 1 {
+			m.menuH = 1
 		}
 		m.help.Width = m.width
 		m.resizeDetail()
@@ -209,8 +227,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
 		return m, m.account.load()
 
-	case folderChosenMsg:
-		m.cfg.SourceRoot = msg.path
+	case sourcesSavedMsg:
+		m.cfg.SourceFolders = msg.folders
 		m.store.Upsert(m.cfg)
 		m.saveErr = m.store.Save()
 		m.focus = focusSidebar
@@ -343,9 +361,9 @@ func (m Model) enterScreen(s screen) (tea.Model, tea.Cmd) {
 		m.account.setSize(m.contentW(), m.detailH)
 		return m, m.account.load()
 	case screenFolder:
-		m.folder = newFolderModel(m.folderStart())
-		m.folder.setHeight(m.detailH - 4)
-		return m, m.folder.Init()
+		m.sources = newSourcesModel(m.cfg.SourceFolders, m.folderStart())
+		m.sources.setSize(m.contentW(), m.detailH)
+		return m, m.sources.Init()
 	case screenBackups:
 		m.backups = newBackupsModel(m.cfg, m.rc)
 		m.backups.setSize(m.contentW(), m.detailH)
@@ -387,7 +405,7 @@ func (m Model) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case screenAccount:
 		m.account, cmd = m.account.Update(msg)
 	case screenFolder:
-		m.folder, cmd = m.folder.Update(msg)
+		m.sources, cmd = m.sources.Update(msg)
 	case screenBackups:
 		m.backups, cmd = m.backups.Update(msg)
 	case screenUpload:
@@ -419,17 +437,58 @@ func (m Model) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 	}
 
-	sidebar := paneStyle(m.focus == focusSidebar).
-		Width(sidebarWidth).Height(m.detailH).
-		Render(m.accountBadge() + "\n" + m.menu.View())
+	// Left column: a small header box (app name + account) over the menu box.
+	header := paneStyle(false).
+		Width(sidebarWidth).Height(headerContentH).
+		Render(m.headerView())
+	menu := paneStyle(m.focus == focusSidebar).
+		Width(sidebarWidth).Height(m.menuH).
+		Render(m.menu.View())
+	left := lipgloss.JoinVertical(lipgloss.Left, header, menu)
 
+	// Right column: the detail box over a tooltip box explaining the focused item.
 	detail := paneStyle(m.focus == focusDetail).
 		Width(m.detailW).Height(m.detailH).
-		MarginLeft(1).
 		Render(m.detailView())
+	tooltip := paneStyle(false).
+		Width(m.detailW).Height(tooltipContentH).
+		Render(m.tooltipView())
+	right := lipgloss.JoinVertical(lipgloss.Left, detail, tooltip)
 
-	row := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, detail)
+	row := lipgloss.JoinHorizontal(lipgloss.Top, left,
+		lipgloss.NewStyle().MarginLeft(1).Render(right))
 	return row + "\n" + m.footer()
+}
+
+// headerView renders the top-left box: the app name over the active account.
+func (m Model) headerView() string {
+	return titleStyle.Render("RCSS") + "\n" + m.accountBadge()
+}
+
+// tooltipView renders the bottom-right box: a detailed explanation of whatever
+// item is focused (a settings field, or the highlighted menu item).
+func (m Model) tooltipView() string {
+	return subtitleStyle.Render(m.tooltipText())
+}
+
+// tooltipText returns the explanation for the focused item. While editing
+// Settings it tracks the focused field; otherwise it describes the highlighted
+// menu item (which is also the screen being viewed in the detail box).
+func (m Model) tooltipText() string {
+	switch {
+	case m.showHelp:
+		return "Keyboard shortcuts. Press ? or esc to close this overlay."
+	case m.locked:
+		return "This screen is locked until its requirement is met (see the panel)."
+	case m.focus == focusDetail && m.screen == screenSettings:
+		if h := m.settings.statusHint(); h != "" {
+			return h
+		}
+	}
+	if it, ok := m.menu.SelectedItem().(menuItem); ok {
+		return it.desc
+	}
+	return ""
 }
 
 // footer renders the bottom hint line: a keymap-driven short help while the
@@ -463,7 +522,7 @@ func (m Model) detailView() string {
 	case screenAccount:
 		return m.account.View()
 	case screenFolder:
-		return m.folder.View()
+		return m.sources.View()
 	case screenBackups:
 		return m.backups.View()
 	case screenUpload:
@@ -528,7 +587,7 @@ func (m Model) previewView() string {
 		body += "\n\n" + infoLine("Active account", m.cfg.RemoteName) +
 			"\n" + infoLine("Accounts configured", fmt.Sprintf("%d", len(m.store.Accounts)))
 	case screenFolder:
-		body += "\n\n" + infoLine("Backup source", m.cfg.SourceRoot)
+		body += "\n\n" + infoLine("Backup folders", fmt.Sprintf("%d configured", len(m.cfg.SourceFolders)))
 	case screenUpload, screenClean, screenBackups:
 		body += "\n\n" + infoLine("Remote", m.cfg.RemoteName) +
 			"\n" + infoLine("Destination", destinationLabel(m.cfg.RemoteDestination))
@@ -582,7 +641,7 @@ func (m Model) detailFooter() string {
 	case screenAccount:
 		hint = "↑/↓ move • enter switch • d forget • r refresh • / filter • esc back"
 	case screenFolder:
-		hint = "↑/↓ move • →/l open • ←/h up • enter select dir • esc back"
+		hint = m.sources.footerHint()
 	case screenBackups:
 		hint = m.backups.footerHint()
 	case screenUpload:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -78,7 +79,7 @@ type RestoreOptions struct {
 	// DryRun previews the download without writing files.
 	DryRun bool
 	// OutputPath overrides the download destination. When empty, the file is
-	// restored to <RestoreDestination or SourceRoot>/<project>/.
+	// restored to RestoreTarget(cfg, project) (see that function).
 	OutputPath string
 }
 
@@ -120,24 +121,24 @@ func Restore(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Log
 	return nil
 }
 
-// RestoreTarget returns the default local folder a project's files restore to:
-// <RestoreDestination or SourceRoot>/<project> (root-level files, project == "",
-// land directly in the base). The configured restore destination wins;
-// otherwise it falls back to the backup source so existing configs keep their
-// previous behavior. The TUI uses this to pre-fill the (editable) restore
+// RestoreTarget returns the default local folder a project's files restore to.
+// A configured RestoreDestination wins (then /<project>); otherwise the project
+// is mapped back to the source folder it came from (matched by basename), so a
+// backup restores in place. The TUI uses this to pre-fill the (editable) restore
 // destination, so the confirm field matches what Restore would do.
 func RestoreTarget(cfg config.Config, project string) (string, error) {
-	base := cfg.RestoreDestination
-	if base == "" {
-		base = cfg.SourceRoot
+	if cfg.RestoreDestination != "" {
+		if project != "" {
+			return joinRemoteLocal(cfg.RestoreDestination, project), nil
+		}
+		return cfg.RestoreDestination, nil
 	}
-	if base == "" {
-		return "", fmt.Errorf("config incomplete: set a restore destination or source_root")
+	for _, sf := range cfg.SourceFolders {
+		if filepath.Base(sf) == project {
+			return sf, nil
+		}
 	}
-	if project != "" {
-		return joinRemoteLocal(base, project), nil
-	}
-	return base, nil
+	return "", fmt.Errorf("config incomplete: set a restore destination (no backup source named %q)", project)
 }
 
 // joinRemoteLocal joins a local base path with a project folder, keeping it

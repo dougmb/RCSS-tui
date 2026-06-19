@@ -41,16 +41,15 @@ func joinRemote(parts ...string) string {
 	return strings.Join(cleaned, "/")
 }
 
-// isIgnored reports whether a project folder name should be skipped: hidden
-// folders (starting with ".") and any name listed in cfg.IgnoredFolders.
-func isIgnored(name string, cfg config.Config) bool {
-	if strings.HasPrefix(name, ".") {
-		return true
-	}
-	for _, ig := range cfg.IgnoredFolders {
-		if ig == name {
-			return true
+// uploadExcludes builds the rclone --exclude patterns for an upload: the
+// SkipFormats patterns (files) plus each IgnoredFolders entry as a directory
+// exclude ("<name>/**"), so both file formats and folder names are skipped.
+func uploadExcludes(cfg config.Config) []string {
+	out := formatExcludes(cfg)
+	for _, f := range cfg.IgnoredFolders {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f+"/**")
 		}
 	}
-	return false
+	return out
 }

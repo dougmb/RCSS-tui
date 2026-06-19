@@ -153,7 +153,7 @@ func TestCleanForceDoubleConfirm(t *testing.T) {
 // TestSettingsSavedConfirmation checks the done state renders a visible
 // confirmation (success and error paths).
 func TestSettingsSavedConfirmation(t *testing.T) {
-	s := newSettingsModel(config.Config{RemoteName: "r:", SourceRoot: "/tmp", RemoteDestination: "Backups"})
+	s := newSettingsModel(config.Config{RemoteName: "r:", SourceFolders: []string{"/tmp"}, RemoteDestination: "Backups"})
 	s.done = true
 	if got := s.View(); !strings.Contains(got, "Settings saved") {
 		t.Errorf("expected saved confirmation, got:\n%s", got)

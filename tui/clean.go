@@ -60,7 +60,10 @@ func (c cleanModel) remoteDest() string {
 
 // localRule describes what Back Up Now does to local files, for the intro text.
 func (c cleanModel) localRule() string {
-	if c.cfg.DeleteAfterUpload {
+	if !c.cfg.DeleteAfterUpload {
+		return "local files are kept (delete-after-upload is off)"
+	}
+	if c.cfg.RetentionDays == 0 {
 		return "all local files removed after a successful upload (delete-after-upload is on)"
 	}
 	return fmt.Sprintf("local files older than %d day(s) removed after a successful upload", c.cfg.RetentionDays)

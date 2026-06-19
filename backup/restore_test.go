@@ -7,14 +7,17 @@ import (
 	"github.com/dougmb/rcss-tui/config"
 )
 
-// TestRestoreTarget covers the default local restore destination: the configured
-// RestoreDestination wins, otherwise it falls back to SourceRoot, a project adds
-// a sub-folder, and an unset config errors.
+// TestRestoreTarget covers the default local restore destination: a configured
+// RestoreDestination wins (project adds a sub-folder); otherwise the project is
+// mapped back to the source folder it came from; an unmatched project errors.
 func TestRestoreTarget(t *testing.T) {
 	sep := string(os.PathSeparator)
 
-	// RestoreDestination wins over SourceRoot; project adds a sub-folder.
-	cfg := config.Config{SourceRoot: "/src", RestoreDestination: "/restore"}
+	// RestoreDestination wins; project adds a sub-folder.
+	cfg := config.Config{
+		SourceFolders:      []string{"/home/me/work/website", "/home/me/notes"},
+		RestoreDestination: "/restore",
+	}
 	if got, err := RestoreTarget(cfg, "proj"); err != nil || got != "/restore"+sep+"proj" {
 		t.Errorf("project restore: got %q err=%v", got, err)
 	}
@@ -22,12 +25,13 @@ func TestRestoreTarget(t *testing.T) {
 	if got, err := RestoreTarget(cfg, ""); err != nil || got != "/restore" {
 		t.Errorf("root restore: got %q err=%v", got, err)
 	}
-	// Falls back to SourceRoot when RestoreDestination is empty.
-	if got, err := RestoreTarget(config.Config{SourceRoot: "/src"}, "proj"); err != nil || got != "/src"+sep+"proj" {
-		t.Errorf("fallback restore: got %q err=%v", got, err)
+	// With no RestoreDestination, a backup restores to its original source folder.
+	src := config.Config{SourceFolders: []string{"/home/me/work/website", "/home/me/notes"}}
+	if got, err := RestoreTarget(src, "website"); err != nil || got != "/home/me/work/website" {
+		t.Errorf("in-place restore: got %q err=%v", got, err)
 	}
-	// Errors when neither destination is configured.
-	if _, err := RestoreTarget(config.Config{}, "proj"); err == nil {
-		t.Error("expected error when no destination configured")
+	// Errors when no destination and no matching source folder.
+	if _, err := RestoreTarget(src, "unknown"); err == nil {
+		t.Error("expected error when no matching backup source")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,13 +29,12 @@ type UploadResult struct {
 	DeleteErrors int
 }
 
-// Upload ports uploadBackup.sh: it iterates the sub-directories of
-// cfg.SourceRoot, skips dotfolders and ignored folders, and uploads each
-// "project" to <remote>/<dest>/<project> via rclone copy. Local cleanup runs
-// ONLY inside the success branch of each upload (the core safety invariant):
-// when DeleteAfterUpload is set every top-level file is removed, otherwise
-// only files older than RetentionDays. A SYNC SUMMARY block is appended to the
-// log at the end of every run.
+// Upload ports uploadBackup.sh to the multi-folder model: it uploads each folder
+// in cfg.SourceFolders to <remote>/<dest>/<folder-basename> via rclone copy.
+// Local cleanup runs ONLY inside the success branch of each upload (the core
+// safety invariant): when DeleteAfterUpload is off no local files are touched;
+// when on, files older than RetentionDays are removed (0 days removes them all).
+// A SYNC SUMMARY block is appended to the log at the end of every run.
 func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logger, opts UploadOptions) (UploadResult, error) {
 	res := UploadResult{Status: "SUCCESS"}
 
@@ -42,44 +42,26 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 		log.Errorf("%v", err)
 		return res, err
 	}
-	if fi, err := os.Stat(cfg.SourceRoot); err != nil || !fi.IsDir() {
-		err := fmt.Errorf("source root directory not found: %s", cfg.SourceRoot)
-		log.Errorf("%v", err)
-		return res, err
-	}
 
 	overallStart := time.Now()
 	log.Infof("Starting backup synchronization...")
-	log.Infof("Settings: root=%s | remote=%s | retention=%dd | skip_dotfiles=%t | delete_after_upload=%t",
-		cfg.SourceRoot, cfg.RemoteName, cfg.RetentionDays, cfg.SkipDotfiles, cfg.DeleteAfterUpload)
+	log.Infof("Settings: folders=%d | remote=%s | delete_after_upload=%t | retention=%dd | skip_formats=%s",
+		len(cfg.SourceFolders), cfg.RemoteName, cfg.DeleteAfterUpload, cfg.RetentionDays, strings.Join(cfg.SkipFormats, " "))
+	warnDuplicateNames(cfg.SourceFolders, log)
 
-	entries, err := os.ReadDir(cfg.SourceRoot)
-	if err != nil {
-		log.Errorf("reading backup root: %v", err)
-		return res, err
-	}
-
-	projects, looseFiles := 0, 0
-	for _, entry := range entries {
+	excludes := uploadExcludes(cfg)
+	for _, folder := range cfg.SourceFolders {
 		if ctx.Err() != nil {
 			return res, ctx.Err()
 		}
-		// Loose top-level files are uploaded as a group after the loop.
-		if !entry.IsDir() {
-			if entry.Type().IsRegular() && !(cfg.SkipDotfiles && strings.HasPrefix(entry.Name(), ".")) {
-				looseFiles++
-			}
+		name := filepath.Base(folder)
+		if fi, err := os.Stat(folder); err != nil || !fi.IsDir() {
+			log.Warnf("   ⚠ Source folder not found, skipping: %s", folder)
+			res.UploadErrors++
 			continue
 		}
-		name := entry.Name()
-		if isIgnored(name, cfg) {
-			log.Verbosef("   - Skipping ignored/reserved folder: %s", name)
-			continue
-		}
-		projects++
 
-		projectPath := filepath.Join(cfg.SourceRoot, name)
-		log.Infof("→ Processing project: %s", name)
+		log.Infof("→ Backing up folder: %s", name)
 		stepStart := time.Now()
 
 		copyOpts := rclone.CopyOptions{
@@ -90,40 +72,28 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 			UseMmap:      true,
 			Retries:      3,
 			Progress:     opts.ShowProgress,
-		}
-		if cfg.SkipDotfiles {
-			copyOpts.Excludes = []string{".*", ".*/**"}
+			Excludes:     excludes,
 		}
 
 		dst := joinRemote(cfg.RemoteName, cfg.RemoteDestination, name)
-		err := rc.Copy(ctx, projectPath, dst, copyOpts, log.Raw)
-		if err != nil {
-			log.Warnf("   ⚠ Sync failed for project %s. Local cleanup SKIPPED.", name)
+		if err := rc.Copy(ctx, folder, dst, copyOpts, log.Raw); err != nil {
+			log.Warnf("   ⚠ Sync failed for %s. Local cleanup SKIPPED.", name)
 			res.UploadErrors++
-			log.Verbosef("   Project time: %s", time.Since(stepStart).Round(time.Second))
+			log.Verbosef("   Folder time: %s", time.Since(stepStart).Round(time.Second))
 			continue
 		}
 
 		log.Infof("   ✓ Synchronized successfully.")
 
 		// Local cleanup — ONLY reached on a successful upload.
-		deleted, delErrs := cleanupLocal(projectPath, cfg, log)
+		deleted, delErrs := cleanupLocal(folder, cfg, log)
 		if deleted > 0 {
 			log.Infof("   - Removed %d local files.", deleted)
 		}
 		res.FilesDeleted += deleted
 		res.DeleteErrors += delErrs
 
-		log.Verbosef("   Project time: %s", time.Since(stepStart).Round(time.Second))
-	}
-
-	// Upload loose top-level files (any type) to the destination root.
-	if looseFiles > 0 {
-		uploadLooseFiles(ctx, cfg, rc, log, opts, &res)
-	}
-
-	if projects == 0 && looseFiles == 0 {
-		log.Warnf("Nothing to back up: %s has no project sub-folders or files.", cfg.SourceRoot)
+		log.Verbosef("   Folder time: %s", time.Since(stepStart).Round(time.Second))
 	}
 
 	res.Duration = time.Since(overallStart)
@@ -136,58 +106,36 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 	log.writeBlock(summaryBlock(cfg, res))
 
 	if res.UploadErrors > 0 {
-		return res, fmt.Errorf("%d project(s) failed to upload", res.UploadErrors)
+		return res, fmt.Errorf("%d folder(s) failed to upload", res.UploadErrors)
 	}
 	return res, nil
 }
 
-// uploadLooseFiles uploads the regular files sitting directly in SourceRoot
-// (not inside any project sub-folder) to the destination root, then runs local
-// cleanup on them — the same success-only invariant as projects. It uses
-// --max-depth 1 so rclone copies only top-level files and never descends into
-// the project sub-folders (those are handled separately).
-func uploadLooseFiles(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logger, opts UploadOptions, res *UploadResult) {
-	log.Infof("→ Uploading loose files in %s", cfg.SourceRoot)
-	stepStart := time.Now()
-
-	copyOpts := rclone.CopyOptions{
-		LogLevel:     log.RcloneLogLevel(),
-		StatsOneLine: true,
-		Stats:        "10s",
-		Update:       true,
-		UseMmap:      true,
-		Retries:      3,
-		Progress:     opts.ShowProgress,
-		MaxDepth:     1,
+// warnDuplicateNames logs a warning when two source folders share a basename,
+// since they map to the same remote folder and would merge there.
+func warnDuplicateNames(folders []string, log *Logger) {
+	seen := make(map[string]bool, len(folders))
+	for _, f := range folders {
+		name := filepath.Base(f)
+		if seen[name] {
+			log.Warnf("Two source folders share the name %q; they will merge into the same remote folder.", name)
+		}
+		seen[name] = true
 	}
-	if cfg.SkipDotfiles {
-		copyOpts.Excludes = []string{".*"}
-	}
-
-	dst := remoteDest(cfg)
-	if err := rc.Copy(ctx, cfg.SourceRoot, dst, copyOpts, log.Raw); err != nil {
-		log.Warnf("   ⚠ Loose file upload failed. Local cleanup SKIPPED.")
-		res.UploadErrors++
-		return
-	}
-
-	log.Infof("   ✓ Synchronized successfully.")
-	deleted, delErrs := cleanupLocal(cfg.SourceRoot, cfg, log)
-	if deleted > 0 {
-		log.Infof("   - Removed %d local files.", deleted)
-	}
-	res.FilesDeleted += deleted
-	res.DeleteErrors += delErrs
-	log.Verbosef("   Loose files time: %s", time.Since(stepStart).Round(time.Second))
 }
 
 // cleanupLocal removes top-level files from projectPath after a successful
-// upload, returning the number deleted and the number of delete errors. With
-// DeleteAfterUpload it removes every top-level file; otherwise only files
-// older than RetentionDays. It never recurses and never removes directories,
+// upload, returning the number deleted and the number of delete errors. When
+// DeleteAfterUpload is off it does nothing — local files are always kept.
+// When on it removes files older than RetentionDays (0 days removes them all).
+// Files excluded from the upload (SkipFormats) are never deleted, since they
+// were not backed up. It never recurses and never removes directories,
 // matching `find -maxdepth 1 -type f`.
 func cleanupLocal(projectPath string, cfg config.Config, log *Logger) (deleted, delErrs int) {
-	if cfg.DeleteAfterUpload {
+	if !cfg.DeleteAfterUpload {
+		return 0, 0 // local cleanup is disabled — keep everything
+	}
+	if cfg.RetentionDays == 0 {
 		log.Verbosef("   Deleting all uploaded local files...")
 	} else {
 		log.Verbosef("   Cleaning local files older than %d days...", cfg.RetentionDays)
@@ -212,11 +160,12 @@ func cleanupLocal(projectPath string, cfg config.Config, log *Logger) (deleted, 
 		if !info.Mode().IsRegular() {
 			continue
 		}
-		// Don't delete dotfiles that were excluded from the upload.
-		if cfg.SkipDotfiles && strings.HasPrefix(e.Name(), ".") {
+		// Don't delete files that were excluded from the upload.
+		if matchesSkip(e.Name(), cfg) {
 			continue
 		}
-		if !cfg.DeleteAfterUpload && !info.ModTime().Before(cutoff) {
+		// Keep files newer than the retention window (0 days keeps nothing).
+		if cfg.RetentionDays > 0 && !info.ModTime().Before(cutoff) {
 			continue
 		}
 		path := filepath.Join(projectPath, e.Name())
@@ -228,6 +177,42 @@ func cleanupLocal(projectPath string, cfg config.Config, log *Logger) (deleted, 
 		deleted++
 	}
 	return deleted, delErrs
+}
+
+// formatExcludes maps cfg.SkipFormats to rclone --exclude patterns. A bare
+// token like "tmp" becomes "*.tmp"; an entry that already looks like a pattern
+// (contains a glob metacharacter or starts with a dot) is used verbatim, and
+// the dotfile pattern ".*" also excludes dot-directories via ".*/**".
+func formatExcludes(cfg config.Config) []string {
+	var out []string
+	for _, f := range cfg.SkipFormats {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if strings.HasPrefix(f, ".") || strings.ContainsAny(f, "*?[/") {
+			out = append(out, f)
+			if f == ".*" {
+				out = append(out, ".*/**")
+			}
+			continue
+		}
+		out = append(out, "*."+f)
+	}
+	return out
+}
+
+// matchesSkip reports whether a top-level file name is excluded by SkipFormats,
+// so local cleanup never deletes a file that was not uploaded. Patterns that
+// only match directories (e.g. ".*/**") can't match a bare file name and are
+// simply ignored here.
+func matchesSkip(name string, cfg config.Config) bool {
+	for _, pat := range formatExcludes(cfg) {
+		if ok, err := path.Match(pat, name); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // summaryBlock builds the fixed-width SYNC SUMMARY appended to the log.
@@ -244,9 +229,9 @@ func summaryBlock(cfg config.Config, res UploadResult) []string {
 		fmt.Sprintf("  Files Removed (Local): %d", res.FilesDeleted),
 		fmt.Sprintf("  Delete Errors     : %d", res.DeleteErrors),
 		"  --- Flags ---",
-		fmt.Sprintf("  skip_dotfiles     : %t", cfg.SkipDotfiles),
 		fmt.Sprintf("  delete_after_upload: %t", cfg.DeleteAfterUpload),
 		fmt.Sprintf("  retention_days    : %d", cfg.RetentionDays),
+		fmt.Sprintf("  skip_formats      : %s", strings.Join(cfg.SkipFormats, " ")),
 		"════════════════════════════════════════════════",
 		"",
 	}

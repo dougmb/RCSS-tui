@@ -23,11 +23,11 @@ func (i menuItem) FilterValue() string { return i.title }
 func newMenu() list.Model {
 	items := []list.Item{
 		menuItem{"Rclone Account", "Select or configure an rclone remote (e.g. Google Drive).", screenAccount},
-		menuItem{"Backup source", "Choose the local directory whose sub-folders are backed up to the cloud.", screenFolder},
+		menuItem{"Backup source", "Choose the local folders to back up; each is uploaded as its own backup.", screenFolder},
 		menuItem{"Back Up Now", "Copy all projects to the cloud now (one-way upload), with live progress.", screenUpload},
 		menuItem{"Restore", "Browse cloud backups by project and restore individual files.", screenBackups},
 		menuItem{"Clean", "Remove old CLOUD backups beyond retention, with a dry-run preview and safety lock.", screenClean},
-		menuItem{"Settings", "Configure retention days, dotfiles, ignored folders and behavior.", screenSettings},
+		menuItem{"Settings", "Configure paths, retention, skip formats, ignored folders and cleanup behavior.", screenSettings},
 		menuItem{"Schedule", "Set up automatic backup and clean schedules via your OS scheduler (crontab / Task Scheduler).", screenSchedule},
 		menuItem{"Logs", "View the sync log with colorized ERROR and WARN entries.", screenLogs},
 		menuItem{"About", "About RCSS: version, dependency status, and config locations.", screenAbout},
@@ -38,10 +38,10 @@ func newMenu() list.Model {
 	d.SetSpacing(0)
 
 	l := list.New(items, d, 0, 0)
-	l.Title = "RCSS"
+	// The app name lives in the header box now, so the list needs no title.
+	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
 	l.SetShowHelp(false)
 	l.SetShowPagination(false)
-	l.Styles.Title = titleStyle
 	return l
 }

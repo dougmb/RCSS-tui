@@ -28,8 +28,7 @@ credentials in its own config; RCSS never handles API secrets.
 
 - `charmbracelet/bubbletea` — framework (Elm architecture)
 - `charmbracelet/lipgloss` — styles / theme
-- `charmbracelet/bubbles` — list, filepicker, viewport, progress, spinner
-- `charmbracelet/huh` — forms (Settings)
+- `charmbracelet/bubbles` — list, filepicker, viewport, progress, spinner, textinput
 - `BurntSushi/toml` — config file
 - Runtime: the `rclone` binary on your `PATH`
 
@@ -152,8 +151,9 @@ A first run, end to end:
    defaults and makes it the active account (the sidebar shows `● active`).
 3. **Backup source** — browse with `→`/`l` to drill in and `←`/`h` to go up,
    then press `enter` on the folder whose **sub-folders are your projects**.
-4. *(optional)* **Settings** — tune local/remote retention, “delete after
-   upload”, dotfile skipping, and ignored folders; saved with a confirmation.
+4. *(optional)* **Settings** — one scrollable page; toggles like “Delete local
+   after upload” and “Skip file formats” expand (▾) to reveal their own options,
+   and the focused item's help shows in the status bar; saved with a confirmation.
 5. **Back Up Now** — the remote destination is pre-filled from Settings (blank =
    account root) and **editable** to confirm before you start; press `enter` to
    begin the one-way upload. Progress streams live and it finishes with
@@ -189,12 +189,12 @@ Opens the full UI. From the main menu:
 | **Restore** | Browse remote projects → files and restore one, with live progress |
 | **Back Up Now** | Copy all projects to the cloud now (one-way upload), streaming rclone progress |
 | **Clean** | Remove old **cloud** backups: explains the criteria, previews with a dry-run, then deletes; optional Force (double-confirmed) bypasses the safety lock |
-| **Settings** | Edit retention and behavior; saved to `config.toml` with a visible confirmation |
+| **Settings** | One scrollable page; toggles expand (▾) to reveal their sub-settings and the focused item's help shows in a status bar; saved to `config.toml` with a visible confirmation |
 | **Schedule** | Toggle and time the Upload / Clean jobs (daily, or weekly on a chosen weekday) in one editor, pre-filled with the current schedule; installs them into your OS scheduler (crontab / Task Scheduler) |
 | **Logs** | Scroll the sync log with ERROR/WARN highlighting |
 | **About** | Version, rclone/scheduler status, and config/log locations |
 
-The UI requires a terminal of at least **80×12**; anything smaller renders a
+The UI requires a terminal of at least **80×14**; anything smaller renders a
 single centered notice (`Not enough space to render panels`).
 
 Global keys: `↑/↓` move · `enter`/`→` open · `1`–`9` jump to a screen (incl.
@@ -249,18 +249,20 @@ Each account entry has these fields:
 | `source_root` | — | local folder whose sub-folders are projects |
 | `remote_destination` | `` (blank) | destination folder on the remote; **blank = the account root** |
 | `restore_destination` | `` (blank) | local folder restores are written to; **blank = the backup source** |
-| `retention_days` | `1` | delete **local** files older than this after a successful upload |
+| `delete_after_upload` | `false` | enable local cleanup after a successful upload; **off keeps all local files** |
+| `retention_days` | `0` | when `delete_after_upload` is on, keep local files this many days (**0 = delete all**); ignored when off |
 | `remote_retention_days` | `15` | delete **cloud** files older than this on clean |
 | `remote_cleanup_safety_days` | `2` | clean is blocked unless a backup newer than this exists |
-| `delete_after_upload` | `false` | delete all local files right after a successful upload |
-| `skip_dotfiles` | `false` | exclude hidden files/folders from uploads |
+| `skip_formats` | `` (blank) | file patterns excluded from uploads; a token like `tmp` means `*.tmp`, while `.*`, `*.log`, or `node_modules/**` are used verbatim (so `.*` skips dotfiles) |
 | `ignored_folders` | `scripts config bin logs lost+found` | sub-folders never treated as projects |
 | `log_file` | (config dir)/`backup-<account>.log` | append-only run log (per account) |
 
 ## Safety guarantees
 
-- **Local files are deleted only after a successful upload** of that project —
-  a failed upload never removes local data.
+- **Local cleanup is off by default and only runs after a successful upload** of
+  that project — a failed upload never removes local data, and with
+  `delete_after_upload` off nothing local is ever deleted. Files excluded by
+  `skip_formats` are never deleted locally (they were not uploaded).
 - **Remote cleanup is locked** unless a recent backup (within
   `remote_cleanup_safety_days`) exists on the remote, so a silently-stopped
   upload cron cannot let cleanup wipe your history. `--force` bypasses the lock

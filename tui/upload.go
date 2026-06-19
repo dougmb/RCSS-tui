@@ -152,7 +152,7 @@ func (u uploadModel) View() string {
 		b.WriteString("\n\n")
 		b.WriteString(subtitleStyle.Render("Copies each project sub-folder to the cloud (one-way upload)."))
 		b.WriteString("\n\n")
-		b.WriteString(subtitleStyle.Render("Source: " + u.cfg.SourceRoot))
+		b.WriteString(subtitleStyle.Render(fmt.Sprintf("Source: %d folder(s)", len(u.cfg.SourceFolders))))
 		b.WriteString("\n")
 		b.WriteString(subtitleStyle.Render("Remote: " + u.cfg.RemoteName))
 		b.WriteString("\n")

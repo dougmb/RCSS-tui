@@ -33,16 +33,27 @@ type Config struct {
 	// including the trailing colon (e.g. "drive:" or "douglas:"). It is the
 	// account's unique key.
 	RemoteName string `toml:"remote_name"`
-	// SourceRoot is the local directory whose sub-folders are the projects.
-	SourceRoot string `toml:"source_root"`
+	// SourceFolders are the local folders to back up. Each one is uploaded as
+	// its own backup at <RemoteName>/<RemoteDestination>/<folder-basename>.
+	SourceFolders []string `toml:"source_folders"`
+	// SourceRoot is the deprecated single-folder field from older RCSS versions.
+	// It is read only to migrate into SourceFolders on load (see LoadStore) and
+	// is otherwise unused; omitempty keeps it out of freshly written configs.
+	SourceRoot string `toml:"source_root,omitempty"`
 	// RemoteDestination is the destination folder on the remote; backups live
 	// at <RemoteName>/<RemoteDestination>/<project>/.
 	RemoteDestination string `toml:"remote_destination"`
 
-	// RetentionDays controls deletion of LOCAL files after a successful
-	// upload (files older than this are removed). Ignored when
-	// DeleteAfterUpload is true.
+	// DeleteAfterUpload enables local cleanup after a successful upload. When
+	// off, local files are never deleted. When on, files older than
+	// RetentionDays are removed (RetentionDays == 0 removes them all).
+	DeleteAfterUpload bool `toml:"delete_after_upload"`
+	// RetentionDays is how many days of local backups to keep when
+	// DeleteAfterUpload is on: files older than this are removed after a
+	// successful upload (0 = delete all immediately). Ignored when
+	// DeleteAfterUpload is off.
 	RetentionDays int `toml:"retention_days"`
+
 	// RemoteRetentionDays controls deletion of CLOUD files during clean.
 	RemoteRetentionDays int `toml:"remote_retention_days"`
 	// RemoteCleanupSafetyDays blocks remote cleanup unless a backup newer than
@@ -50,18 +61,18 @@ type Config struct {
 	// have silently stopped.
 	RemoteCleanupSafetyDays int `toml:"remote_cleanup_safety_days"`
 
-	// DeleteAfterUpload deletes all local files immediately after a successful
-	// upload, bypassing RetentionDays.
-	DeleteAfterUpload bool `toml:"delete_after_upload"`
-	// SkipDotfiles excludes hidden files/folders (starting with ".") from
-	// uploads, protecting files like .env, .git/, .ssh/.
-	SkipDotfiles bool `toml:"skip_dotfiles"`
-	// IgnoredFolders are sub-folders of SourceRoot never treated as projects.
+	// SkipFormats are file patterns excluded from uploads via rclone --exclude.
+	// A bare token like "tmp" matches "*.tmp"; an entry containing a glob or a
+	// leading dot (e.g. ".*", "*.log", "node_modules/**") is used verbatim, so
+	// ".*" skips dotfiles. Empty means nothing is skipped.
+	SkipFormats []string `toml:"skip_formats"`
+	// IgnoredFolders are directory names excluded from within each backup
+	// (folded into rclone --exclude as "<name>/**"), e.g. node_modules.
 	IgnoredFolders []string `toml:"ignored_folders"`
 
 	// RestoreDestination is the local folder restored files are written to.
-	// Empty falls back to SourceRoot (see backup.Restore), so existing configs
-	// keep their previous behavior.
+	// Empty falls back to the matching source folder (see backup.RestoreTarget),
+	// so a backup restores to the folder it came from.
 	RestoreDestination string `toml:"restore_destination"`
 
 	// LogFile is the path to the append-only backup log. Empty means a per-account
@@ -77,17 +88,17 @@ type Store struct {
 	Accounts []Config `toml:"accounts"`
 }
 
-// Default returns a Config populated with the recommended defaults: backups go
-// to the account root (empty RemoteDestination), 1 day of local retention,
-// 15 days remote, a 2-day cleanup safety window, with delete-after-upload and
-// skip-dotfiles disabled.
+// Default returns a Config populated with the recommended defaults: no source
+// folders yet, backups go to the account root (empty RemoteDestination), 15 days
+// remote retention, a 2-day cleanup safety window, with local delete-after-upload
+// off and no skip patterns. RetentionDays is 0 so that, if delete-after-upload is
+// later turned on, it removes everything unless a longer window is set.
 func Default() Config {
 	return Config{
 		RemoteDestination:       "",
-		RetentionDays:           1,
+		RetentionDays:           0,
 		RemoteRetentionDays:     15,
 		RemoteCleanupSafetyDays: 2,
-		IgnoredFolders:          []string{"scripts", "config", "bin", "logs", "lost+found"},
 	}
 }
 
@@ -161,6 +172,24 @@ func (s *Store) Upsert(c Config) {
 
 // SetActive marks an account active by name.
 func (s *Store) SetActive(name string) { s.ActiveAccount = name }
+
+// migrateSourceRoots folds the deprecated SourceRoot of each account into its
+// SourceFolders list (when SourceFolders is empty) and clears SourceRoot.
+// Returns whether any account changed, so the caller can persist.
+func (s *Store) migrateSourceRoots() bool {
+	changed := false
+	for i := range s.Accounts {
+		if s.Accounts[i].SourceRoot == "" {
+			continue
+		}
+		if len(s.Accounts[i].SourceFolders) == 0 {
+			s.Accounts[i].SourceFolders = []string{s.Accounts[i].SourceRoot}
+		}
+		s.Accounts[i].SourceRoot = ""
+		changed = true
+	}
+	return changed
+}
 
 // Remove deletes an account's stored settings (the rclone remote itself is
 // untouched). If it was active, the active account falls back to the first
@@ -269,6 +298,11 @@ func LoadStore() (*Store, error) {
 		}
 	}
 
+	// Migrate the deprecated single source_root into the SourceFolders list.
+	if st.migrateSourceRoots() {
+		_ = st.Save()
+	}
+
 	// Ensure the active pointer is valid.
 	if _, ok := st.Active(); !ok && len(st.Accounts) > 0 {
 		st.ActiveAccount = st.Accounts[0].RemoteName
@@ -308,8 +342,8 @@ func (c Config) Validate() error {
 	if c.RemoteName == "" {
 		missing = append(missing, "remote_name")
 	}
-	if c.SourceRoot == "" {
-		missing = append(missing, "source_root")
+	if len(c.SourceFolders) == 0 {
+		missing = append(missing, "source_folders")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config incomplete: %v not set", missing)
