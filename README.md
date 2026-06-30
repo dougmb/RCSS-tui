@@ -1,5 +1,7 @@
 # RCSS-tui
 
+![RCSS-tui terminal interface](img/{2C473CC6-9369-4EE1-A73C-5C16F4DFC242}.png)
+
 RCSS-tui is a terminal backup manager powered by [`rclone`](https://rclone.org).
 It provides a friendly terminal UI for backup, restore, cleanup, and scheduling,
 plus headless commands for automation.
