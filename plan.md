@@ -15,7 +15,7 @@ O repo original dos scripts permanece intacto em `origin` (GitHub) e serve apena
 | **Repositório** | Git novo nesta pasta (`RCSS-tui/`) | Histórico limpo. O `.git` antigo (que apontava p/ `dougmb/RCSS`) é reinicializado; o original segue salvo em `origin/RCSS`. |
 | **Lógica de backup** | Go puro, sem scripts | upload/clean/restore reimplementados em Go, chamando o binário `rclone` via `exec.Command`. Sem dependência de bash; `rclone` continua sendo dependência de runtime (como sempre foi). |
 | **Config** | Único `config.toml` em `~/.config/rcss/config.toml` | Sem `backup.env`, sem ponte/envgen. |
-| **Tamanho mínimo** | 80×24 células | Abaixo disso, a TUI renderiza só o aviso centralizado `Not enough space to render panels`. |
+| **Tamanho mínimo** | 80×14 células | Abaixo disso, a TUI renderiza só o aviso centralizado `Not enough space to render panels`. |
 | **Agendamento** | `crontab` do usuário | Bloco gerenciado e delimitado no crontab, sem root. O cron chamará o próprio binário da TUI em modo headless (ex: `rcss upload`). |
 | **Idioma** | Inglês na UI e no código | Melhor para repositório público. |
 
@@ -84,7 +84,7 @@ Funções finas sobre `exec.Command("rclone", ...)`:
 
 ## TUI
 
-**Root model (`tui/app.go`)** em arquitetura Elm: guarda `width`/`height`, tela atual (enum), sub-models. `Update` trata `tea.WindowSizeMsg` e teclas globais (`q`/`ctrl+c` quit, `esc` volta, `?` ajuda). `View` aplica o guard de 80×24. Navegação via `switchScreenMsg`.
+**Root model (`tui/app.go`)** em arquitetura Elm: guarda `width`/`height`, tela atual (enum), sub-models. `Update` trata `tea.WindowSizeMsg` e teclas globais (`q`/`ctrl+c` quit, `esc` volta, `?` ajuda). `View` aplica o guard de 80×14. Navegação via `switchScreenMsg`.
 
 Funcionalidades → telas:
 1. **Conta rclone** (`account.go`): `rclone.ListRemotes()`; "Configure new account" via `tea.ExecProcess(rclone config)` e re-lista ao voltar.
@@ -93,7 +93,7 @@ Funcionalidades → telas:
 4. **Settings** (`settings.go`): form `huh` com defaults recomendados (retention 1d local / 15d remoto / safety 2d; delete-after-upload off; skip-dotfiles off). Salvar grava o TOML.
 5. **Agendamento** (`schedule.go`): presets (upload diário HH:MM, clean semanal) → escreve bloco no crontab via `cron.go`.
 6. **Logs** (`logs.go`): viewport sobre `sync.log`.
-7. **Mínimo 80×24** e **navegação intuitiva**: guard + `bubbles/list` + `bubbles/help`.
+7. **Mínimo 80×14** e **navegação intuitiva**: guard + `bubbles/list` + `bubbles/help`.
 
 ## `config.toml`
 

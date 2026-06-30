@@ -273,9 +273,9 @@ Each account entry has these fields:
   safety lock and is double-confirmed in the UI (and is `--force` headless).
 - Scheduling only ever touches RCSS-managed entries: a single delimited
   `# >>> RCSS-managed >>>` … `# <<< RCSS-managed <<<` block in your crontab on
-  Unix, or the `RCSS-Upload` / `RCSS-Clean` tasks on Windows. Every other entry
-  is preserved, clearing the schedule removes just those, and neither needs
-  root/admin rights.
+  Unix, or `RCSS-<account>-Upload` / `RCSS-<account>-Clean` tasks on Windows.
+  Every other entry is preserved, clearing the schedule removes just those,
+  and neither needs root/admin rights.
 
 ## Project layout
 

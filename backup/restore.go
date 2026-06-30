@@ -102,7 +102,9 @@ func Restore(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Log
 	if opts.IsDir && relPath != "" {
 		dst = joinRemoteLocal(localPath, filepath.Base(relPath))
 	} else if !opts.IsDir {
-		dst = localPath + "/"
+		if !strings.HasSuffix(dst, string(os.PathSeparator)) {
+			dst += string(os.PathSeparator)
+		}
 	}
 
 	log.Infof("Downloading %s to %s...", src, dst)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/dougmb/rcss-tui/config"
+	"github.com/dougmb/rcss-tui/rclone"
 )
 
 // TestFormatExcludes checks the mapping from user tokens/patterns to rclone
@@ -26,12 +27,46 @@ func TestFormatExcludes(t *testing.T) {
 	}
 }
 
+// TestUploadFailureNeverCleansLocal verifies the central safety invariant:
+// even with local cleanup enabled, a failed rclone copy must preserve files.
+func TestUploadFailureNeverCleansLocal(t *testing.T) {
+	project := t.TempDir()
+	localFile := filepath.Join(project, "important.txt")
+	if err := os.WriteFile(localFile, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "calls.txt")
+	t.Setenv("RCSS_FAKE_OUTPUT", out)
+	t.Setenv("RCSS_FAKE_FAIL_COPY", "1")
+	rc := &rclone.Client{Bin: fakeRclone(t)}
+	log, _ := NewLogger("", func(string) {}, false)
+	defer log.Close()
+
+	cfg := config.Config{
+		RemoteName:        "drive:",
+		SourceFolders:     []string{project},
+		DeleteAfterUpload: true,
+		RetentionDays:     0,
+	}
+	res, err := Upload(t.Context(), cfg, rc, log, UploadOptions{})
+	if err == nil {
+		t.Fatal("Upload succeeded; want fake copy failure")
+	}
+	if res.UploadErrors != 1 {
+		t.Fatalf("UploadErrors = %d, want 1", res.UploadErrors)
+	}
+	if _, err := os.Stat(localFile); err != nil {
+		t.Fatalf("failed upload removed local file: %v", err)
+	}
+}
+
 // TestMatchesSkip checks file-name matching against the skip patterns.
 func TestMatchesSkip(t *testing.T) {
 	cfg := config.Config{SkipFormats: []string{"tmp", ".*"}}
 	cases := map[string]bool{
-		"build.tmp": true,  // *.tmp
-		".env":      true,  // .*
+		"build.tmp": true, // *.tmp
+		".env":      true, // .*
 		"main.go":   false,
 		"notes.txt": false,
 	}

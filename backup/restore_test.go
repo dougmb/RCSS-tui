@@ -57,13 +57,7 @@ func TestRestoreTarget(t *testing.T) {
 // destination for files and directories. It uses a fake rclone binary that
 // records the received src/dst arguments and succeeds immediately.
 func TestRestoreBuildsDestination(t *testing.T) {
-	fake := filepath.Join(t.TempDir(), "rclone")
-	if err := os.WriteFile(fake, []byte(`#!/bin/sh
-# Fake rclone: record arguments and succeed.
-echo "$*" > "$RCSS_FAKE_OUTPUT"
-`), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	fake := fakeRclone(t)
 
 	runRestore := func(isDir bool, relPath, restoreDir string) (src, dst string) {
 		t.Helper()
