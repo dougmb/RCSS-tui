@@ -70,6 +70,8 @@ func newScheduleModel(cfg config.Config) scheduleModel {
 	s := scheduleModel{
 		cfg:     cfg,
 		current: current,
+		width:   80,
+		height:  14,
 		jobs: [2]jobForm{
 			{kind: scheduler.Upload, weekly: false, weekday: time.Sunday, hour: 3, min: 0},
 			{kind: scheduler.Clean, weekly: true, weekday: time.Sunday, hour: 5, min: 0},
@@ -299,27 +301,114 @@ func (s scheduleModel) View() string {
 		return s.doneView()
 	}
 
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Schedule — %s (%s)", s.cfg.RemoteName, scheduler.Backend())))
-	b.WriteString("\n")
-	b.WriteString(subtitleStyle.Render(s.currentScheduleText()))
-	b.WriteString("\n\n")
-
-	for i := range s.jobs {
-		b.WriteString(s.renderJob(i))
-		b.WriteString("\n")
+	cw := s.width - 1
+	if cw < 10 {
+		cw = 10
 	}
-	b.WriteString("\n")
+	height := s.height - 2 // title + current-schedule summary
+	if height < 1 {
+		height = 1
+	}
 
-	saveFocused := s.fields()[s.focus].field == fSave
-	save := "[ Save ]"
+	lines, focusStart, focusEnd := s.contentLines()
+	offset := 0
+	if focusEnd > height {
+		offset = focusEnd - height
+	}
+	if focusStart < offset {
+		offset = focusStart
+	}
+	if maxOff := len(lines) - height; offset > maxOff {
+		offset = maxOff
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	bar := scrollColumn(height, len(lines), offset)
+	rows := make([]string, height)
+	for i := 0; i < height; i++ {
+		line := ""
+		if offset+i < len(lines) {
+			line = lines[offset+i]
+		}
+		rows[i] = padLineTo(line, cw) + bar[i]
+	}
+
+	title := clip(fmt.Sprintf("Schedule — %s (%s)", s.cfg.RemoteName, scheduler.Backend()), cw)
+	summary := clip(s.currentScheduleLine(), cw)
+	return titleStyle.Render(title) + "\n" + subtitleStyle.Render(summary) + "\n" + strings.Join(rows, "\n")
+}
+
+// contentLines renders the editor as a flat, scrollable list and identifies
+// the focused row so it remains visible at every supported terminal height.
+func (s scheduleModel) contentLines() (lines []string, focusStart, focusEnd int) {
+	cur := s.fields()[s.focus]
+	for i, jf := range s.jobs {
+		title := jf.kind.Title()
+		if !jf.enabled {
+			title += " (off)"
+		}
+		lines = append(lines, titleStyle.Render(title))
+
+		add := func(field fieldKind, line string) {
+			focused := cur.job == i && cur.field == field
+			if focused {
+				focusStart = len(lines)
+			}
+			lines = append(lines, line)
+			if focused {
+				focusEnd = len(lines)
+			}
+		}
+
+		check := "[ ]"
+		if jf.enabled {
+			check = "[x]"
+		}
+		add(fEnabled, "Enabled: "+fieldValue(check, cur.job == i && cur.field == fEnabled))
+
+		cadence := "Daily"
+		if jf.weekly {
+			cadence = "Weekly"
+		}
+		add(fCadence, "Cadence: "+fieldValue(cadence, cur.job == i && cur.field == fCadence))
+		if jf.weekly {
+			add(fWeekday, "Day:     "+fieldValue(wdShort(jf.weekday), cur.job == i && cur.field == fWeekday))
+		}
+
+		timeStr := fmt.Sprintf("%02d:%02d", jf.hour, jf.min)
+		if cur.job == i && cur.field == fTime && s.editBuf != "" {
+			timeStr = s.editBuf + "_"
+		}
+		add(fTime, "Time:    "+fieldValue(timeStr, cur.job == i && cur.field == fTime))
+		lines = append(lines, "")
+	}
+
+	saveFocused := cur.field == fSave
+	if saveFocused {
+		focusStart = len(lines)
+	}
+	save := subtitleStyle.Render("[ Save ]")
 	if saveFocused {
 		save = titleStyle.Render("‹ Save ›")
-	} else {
-		save = subtitleStyle.Render(save)
 	}
-	b.WriteString(save)
-	return b.String()
+	lines = append(lines, save)
+	if saveFocused {
+		focusEnd = len(lines)
+	}
+	return lines, focusStart, focusEnd
+}
+
+func (s scheduleModel) currentScheduleLine() string {
+	if len(s.current) == 0 {
+		return "Currently scheduled: none."
+	}
+	parts := make([]string, 0, len(s.current))
+	for _, job := range s.current {
+		parts = append(parts, fmt.Sprintf("%s %s at %s", job.Kind.Title(), job.Cadence(), job.Time()))
+	}
+	return "Currently scheduled: " + strings.Join(parts, "; ")
 }
 
 // doneView renders the save confirmation (success or error) before the screen
@@ -342,44 +431,6 @@ func (s scheduleModel) doneView() string {
 		}
 	}
 	return b.String()
-}
-
-// renderJob renders one bordered job block with the focused field highlighted.
-func (s scheduleModel) renderJob(i int) string {
-	jf := s.jobs[i]
-	cur := s.fields()[s.focus]
-	active := cur.job == i
-	focused := func(f fieldKind) bool { return active && cur.field == f }
-
-	check := "[ ]"
-	if jf.enabled {
-		check = "[x]"
-	}
-	cad := "Daily"
-	if jf.weekly {
-		cad = "Weekly"
-	}
-
-	var lines []string
-	lines = append(lines, fieldValue(check+" Enabled", focused(fEnabled)))
-
-	cadence := "Cadence: " + fieldValue(cad, focused(fCadence))
-	if jf.weekly {
-		cadence += "  Day: " + fieldValue(wdShort(jf.weekday), focused(fWeekday))
-	}
-	lines = append(lines, cadence)
-
-	timeStr := fmt.Sprintf("%02d:%02d", jf.hour, jf.min)
-	if focused(fTime) && s.editBuf != "" {
-		timeStr = s.editBuf + "_"
-	}
-	lines = append(lines, "Time:    "+fieldValue(timeStr, focused(fTime)))
-
-	title := jf.kind.Title()
-	if !jf.enabled {
-		title += " (off)"
-	}
-	return paneStyle(active).Render(titleStyle.Render(title) + "\n" + strings.Join(lines, "\n"))
 }
 
 // fieldValue renders a focusable value, bracketing and highlighting it when

@@ -168,10 +168,11 @@ func (m *Model) resizeDetail() {
 	m.account.setSize(w, h)
 	m.backups.setSize(w, h)
 	m.upload.setSize(w, h)
-	m.clean.setHeight(h)
+	m.clean.setSize(w, h)
 	m.settings.setSize(w, h)
 	m.schedule.setSize(w, h)
 	m.logs.setSize(w, h)
+	m.about.setSize(w, h)
 	m.sources.setSize(w, h)
 }
 
@@ -386,7 +387,7 @@ func (m Model) enterScreen(s screen) (tea.Model, tea.Cmd) {
 		// Clean opens on an intro/options screen explaining what it deletes and
 		// exposing the Force toggle; the dry-run is launched from there.
 		m.clean = newCleanModel(m.cfg, m.rc)
-		m.clean.setHeight(m.detailH)
+		m.clean.setSize(m.contentW(), m.detailH)
 		return m, nil
 	case screenSettings:
 		m.settings = newSettingsModel(m.cfg)
@@ -403,6 +404,7 @@ func (m Model) enterScreen(s screen) (tea.Model, tea.Cmd) {
 		return m, nil
 	case screenAbout:
 		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
+		m.about.setSize(m.contentW(), m.detailH)
 		return m, nil
 	}
 	return m, nil
@@ -665,7 +667,7 @@ func (m Model) detailFooter() string {
 	case screenLogs:
 		hint = "↑/↓ scroll • r reload • esc back"
 	case screenAbout:
-		hint = "esc back • q quit"
+		hint = m.about.footerHint()
 	default:
 		hint = "esc back • q quit"
 	}

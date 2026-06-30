@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/dougmb/rcss-tui/config"
 	"github.com/dougmb/rcss-tui/scheduler"
 )
@@ -84,4 +85,23 @@ func countWeekdayFields(s scheduleModel) int {
 		}
 	}
 	return n
+}
+
+func TestScheduleViewStaysInsideSmallPanel(t *testing.T) {
+	s := newScheduleModel(config.Config{RemoteName: "a-very-long-remote-name-that-must-not-overflow:"})
+	s.setSize(24, 6)
+	s.focus = len(s.fields()) - 1 // force scrolling to Save
+
+	view := s.View()
+	if got := strings.Count(view, "\n") + 1; got != 6 {
+		t.Fatalf("view height = %d, want 6:\n%s", got, view)
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > 24 {
+			t.Fatalf("line %d width = %d, want <= 24: %q", i, got, line)
+		}
+	}
+	if !strings.Contains(view, "Save") {
+		t.Fatalf("focused Save row should remain visible:\n%s", view)
+	}
 }

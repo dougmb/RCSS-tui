@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -25,9 +27,36 @@ type opStream struct {
 
 func newOpStream() *opStream { return &opStream{ch: make(chan opEvent, 64)} }
 
-// sink returns a backup.Logger sink that forwards each line as an event.
+// sink forwards useful output while hiding verbose provider JSON bodies.
+// The rclone wrapper extracts their useful message into the final error.
 func (s *opStream) sink() func(string) {
-	return func(line string) { s.ch <- opEvent{line: line} }
+	jsonDepth := 0
+	return func(line string) {
+		trimmed := strings.TrimSpace(line)
+		if jsonDepth == 0 && (trimmed == "{" || trimmed == "[") {
+			jsonDepth = jsonDelta(trimmed)
+			return
+		}
+		if jsonDepth == 0 && strings.HasSuffix(trimmed, "{") &&
+			(strings.Contains(trimmed, "ERROR") || strings.Contains(strings.ToLower(trimmed), "googleapi")) {
+			jsonDepth = jsonDelta(trimmed)
+			s.ch <- opEvent{line: strings.TrimSpace(strings.TrimSuffix(line, "{")) + " [provider details hidden]"}
+			return
+		}
+		if jsonDepth > 0 {
+			jsonDepth += jsonDelta(trimmed)
+			if jsonDepth < 0 {
+				jsonDepth = 0
+			}
+			return
+		}
+		s.ch <- opEvent{line: line}
+	}
+}
+
+func jsonDelta(line string) int {
+	return strings.Count(line, "{") + strings.Count(line, "[") -
+		strings.Count(line, "}") - strings.Count(line, "]")
 }
 
 // finish reports the operation's result and closes the stream.

@@ -19,6 +19,7 @@ type sourcesSavedMsg struct{ folders []string }
 type sourcesModel struct {
 	folders []string
 	cursor  int
+	offset  int
 
 	picking bool        // true while the add-folder picker is open
 	picker  folderModel // reused directory picker
@@ -41,6 +42,7 @@ func (s sourcesModel) Init() tea.Cmd { return nil }
 func (s *sourcesModel) setSize(w, h int) {
 	s.width, s.height = w, h
 	s.picker.setHeight(h - 4)
+	s.adjustOffset()
 }
 
 func (s sourcesModel) Update(msg tea.Msg) (sourcesModel, tea.Cmd) {
@@ -89,10 +91,12 @@ func (s sourcesModel) Update(msg tea.Msg) (sourcesModel, tea.Cmd) {
 	case "up", "k":
 		if s.cursor > 0 {
 			s.cursor--
+			s.adjustOffset()
 		}
 	case "down", "j":
 		if s.cursor < len(s.folders)-1 {
 			s.cursor++
+			s.adjustOffset()
 		}
 	case "a":
 		s.picking = true
@@ -106,6 +110,7 @@ func (s sourcesModel) Update(msg tea.Msg) (sourcesModel, tea.Cmd) {
 			if s.cursor >= len(s.folders) && s.cursor > 0 {
 				s.cursor--
 			}
+			s.adjustOffset()
 		}
 	}
 	return s, nil
@@ -147,6 +152,7 @@ func (s *sourcesModel) addFolder(path string) {
 	}
 	s.folders = append(s.folders, path)
 	s.cursor = len(s.folders) - 1
+	s.adjustOffset()
 }
 
 func (s sourcesModel) View() string {
@@ -157,33 +163,73 @@ func (s sourcesModel) View() string {
 		return s.picker.View()
 	}
 
-	w := s.width - 2
-	if w < 10 {
-		w = 10
+	cw := s.width - 1
+	if cw < 10 {
+		cw = 10
 	}
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Backup source folders"))
-	b.WriteString("\n")
-	b.WriteString(subtitleStyle.Render("Each folder is uploaded as its own backup (remote/<folder-name>)."))
-	b.WriteString("\n\n")
-
-	if len(s.folders) == 0 {
-		b.WriteString(subtitleStyle.Render("No folders yet — press a to add one."))
-	} else {
-		for i, f := range s.folders {
-			line := clip(f, w-2)
-			if i == s.cursor {
-				b.WriteString(titleStyle.Render("› " + line))
-			} else {
-				b.WriteString("  " + line)
-			}
-			b.WriteString("\n")
+	height := s.listRows()
+	lines := s.sourceLines(cw)
+	offset := s.offset
+	if max := len(lines) - height; offset > max {
+		offset = max
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	bar := scrollColumn(height, len(lines), offset)
+	rows := make([]string, height)
+	for i := 0; i < height; i++ {
+		line := ""
+		if offset+i < len(lines) {
+			line = lines[offset+i]
 		}
+		rows[i] = padLineTo(line, cw) + bar[i]
+	}
+
+	return titleStyle.Render("Backup source folders") + "\n" +
+		subtitleStyle.Render(clip("Each folder is uploaded as its own backup.", cw)) + "\n\n" +
+		strings.Join(rows, "\n")
+}
+
+func (s sourcesModel) listRows() int {
+	rows := s.height - 3
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+
+func (s *sourcesModel) adjustOffset() {
+	rows := s.listRows()
+	if s.cursor < s.offset {
+		s.offset = s.cursor
+	}
+	if s.cursor >= s.offset+rows {
+		s.offset = s.cursor - rows + 1
+	}
+	if s.offset < 0 {
+		s.offset = 0
+	}
+}
+
+func (s sourcesModel) sourceLines(width int) []string {
+	if len(s.folders) == 0 {
+		return []string{subtitleStyle.Render("No folders yet — press a to add one.")}
+	}
+	lines := make([]string, 0, len(s.folders)+2)
+	for i, folder := range s.folders {
+		line := clip(folder, width-2)
+		if i == s.cursor {
+			line = titleStyle.Render("› " + line)
+		} else {
+			line = "  " + line
+		}
+		lines = append(lines, line)
 	}
 	if s.status != "" {
-		b.WriteString("\n" + subtitleStyle.Render(s.status))
+		lines = append(lines, "", subtitleStyle.Render(clip(s.status, width)))
 	}
-	return b.String()
+	return lines
 }
 
 // doneView renders the save confirmation before auto-returning to the menu.

@@ -2,191 +2,316 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/dustin/go-humanize"
 
 	"github.com/dougmb/rcss-tui/backup"
 	"github.com/dougmb/rcss-tui/config"
 	"github.com/dougmb/rcss-tui/rclone"
 )
 
-// Clean screen: opens on an intro that spells out exactly what gets deleted
-// (CLOUD files only) and under what conditions, makes clear that LOCAL files
-// are pruned elsewhere (Back Up Now), and exposes a Force toggle. Real deletion
-// always requires a dry-run preview first; deleting with Force on additionally
-// requires a second, explicit confirmation. The safety lock itself lives in
-// backup.Clean.
-
 type cleanState int
 
 const (
 	clIntro cleanState = iota
 	clDryRunning
-	clDryDone
-	clConfirmForce
+	clReport
+	clConfirmSummary
+	clConfirmPhrase
 	clRunning
 	clDone
+	clOutdated
 	clError
 )
 
-type cleanModel struct {
-	cfg config.Config
-	rc  *rclone.Client
-
-	state   cleanState
-	force   bool
-	spinner spinner.Model
-	stream  *opStream
-	output  []string
+type cleanPreviewMsg struct {
+	preview backup.CleanPreview
 	err     error
-	height  int
+}
+type cleanResultMsg struct {
+	result backup.CleanResult
+	err    error
+}
+type cleanActivityTickMsg time.Time
+
+type cleanModel struct {
+	cfg           config.Config
+	rc            *rclone.Client
+	state         cleanState
+	force         bool
+	spinner       spinner.Model
+	preview       backup.CleanPreview
+	selected      []bool
+	cursor        int
+	offset        int
+	input         textinput.Model
+	result        backup.CleanResult
+	err           error
+	width, height int
+	startedAt     time.Time
+	activityTick  int
 }
 
 func newCleanModel(cfg config.Config, rc *rclone.Client) cleanModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	return cleanModel{cfg: cfg, rc: rc, spinner: sp, state: clIntro}
+	ti := textinput.New()
+	ti.Prompt = "> "
+	ti.CharLimit = 512
+	return cleanModel{cfg: cfg, rc: rc, spinner: sp, input: ti, state: clIntro, width: 80, height: 14}
 }
 
-func (c *cleanModel) setHeight(h int) { c.height = h }
+func (c *cleanModel) setSize(w, h int)  { c.width, c.height = w, h }
+func (c cleanModel) remoteDest() string { return c.cfg.RemoteBase() }
 
-// remoteDest renders the remote base path for display.
-func (c cleanModel) remoteDest() string {
-	return c.cfg.RemoteBase()
-}
-
-// localRule describes what Back Up Now does to local files, for the intro text.
 func (c cleanModel) localRule() string {
 	if !c.cfg.DeleteAfterUpload {
 		return "local files are kept (delete-after-upload is off)"
 	}
 	if c.cfg.RetentionDays == 0 {
-		return "all local files removed after a successful upload (delete-after-upload is on)"
+		return "all local files removed after a successful upload"
 	}
-	return fmt.Sprintf("local files older than %d day(s) removed after a successful upload", c.cfg.RetentionDays)
+	return fmt.Sprintf("local files older than %d day(s) removed after upload", c.cfg.RetentionDays)
 }
 
-// run launches backup.Clean (dry-run or real) in a goroutine, streaming output.
-// The current Force toggle is applied to both, so the preview matches the run.
-func (c cleanModel) run(dry bool) (cleanModel, tea.Cmd) {
-	if dry {
-		c.state = clDryRunning
-	} else {
-		c.state = clRunning
-	}
-	c.output = nil
-	stream := newOpStream()
-	c.stream = stream
-
+func (c cleanModel) previewCmd() tea.Cmd {
 	cfg, rc, force := c.cfg, c.rc, c.force
-	go func() {
-		logPath, _ := cfg.ResolveLogFile()
-		log, _ := backup.NewLogger(logPath, stream.sink(), false)
-		err := backup.Clean(context.Background(), cfg, rc, log, backup.CleanOptions{DryRun: dry, Force: force})
-		log.Close()
-		stream.finish(err)
-	}()
+	return func() tea.Msg {
+		log, _ := backup.NewLogger("", nil, false)
+		p, err := backup.PreviewClean(context.Background(), cfg, rc, log, force)
+		if log != nil {
+			log.Close()
+		}
+		return cleanPreviewMsg{p, err}
+	}
+}
 
-	return c, tea.Batch(stream.wait(), c.spinner.Tick)
+func (c cleanModel) executeCmd(paths []string) tea.Cmd {
+	cfg, rc, force, preview := c.cfg, c.rc, c.force, c.preview
+	return func() tea.Msg {
+		log, _ := backup.NewLogger("", nil, false)
+		result, err := backup.ExecuteClean(context.Background(), cfg, rc, log, preview, paths, force)
+		if log != nil {
+			log.Close()
+		}
+		return cleanResultMsg{result, err}
+	}
+}
+
+func (c cleanModel) startPreview() (cleanModel, tea.Cmd) {
+	c.state, c.err = clDryRunning, nil
+	c.startedAt, c.activityTick = time.Now(), 0
+	return c, tea.Batch(c.previewCmd(), c.spinner.Tick, cleanActivityTick())
+}
+
+func cleanActivityTick() tea.Cmd {
+	return tea.Tick(250*time.Millisecond, func(t time.Time) tea.Msg {
+		return cleanActivityTickMsg(t)
+	})
 }
 
 func (c cleanModel) Update(msg tea.Msg) (cleanModel, tea.Cmd) {
 	switch msg := msg.(type) {
-	case opEvent:
-		if msg.done {
-			switch {
-			case msg.err != nil:
-				c.state, c.err = clError, msg.err
-			case c.state == clDryRunning:
-				c.state = clDryDone
-			default:
-				c.state = clDone
-			}
+	case cleanPreviewMsg:
+		if msg.err != nil {
+			c.state, c.err = clError, msg.err
 			return c, nil
 		}
-		c.output = append(c.output, msg.line)
-		return c, c.stream.wait()
-
+		c.preview = msg.preview
+		c.selected = make([]bool, len(msg.preview.Candidates))
+		for i := range c.selected {
+			c.selected[i] = true
+		}
+		c.cursor, c.offset, c.state = 0, 0, clReport
+		return c, nil
+	case cleanResultMsg:
+		c.result = msg.result
+		if errors.Is(msg.err, backup.ErrPreviewOutdated) {
+			c.state, c.err = clOutdated, msg.err
+		} else if msg.err != nil {
+			c.state, c.err = clError, msg.err
+		} else {
+			c.state = clDone
+		}
+		return c, nil
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		c.spinner, cmd = c.spinner.Update(msg)
 		return c, cmd
-
+	case cleanActivityTickMsg:
+		if c.state != clDryRunning && c.state != clRunning {
+			return c, nil
+		}
+		c.activityTick++
+		return c, cleanActivityTick()
 	case tea.KeyMsg:
 		return c.handleKey(msg)
+	}
+	if c.state == clConfirmPhrase {
+		var cmd tea.Cmd
+		c.input, cmd = c.input.Update(msg)
+		return c, cmd
 	}
 	return c, nil
 }
 
 func (c cleanModel) handleKey(msg tea.KeyMsg) (cleanModel, tea.Cmd) {
-	switch msg.String() {
-	case "q":
+	key := msg.String()
+	if key == "q" && c.state != clConfirmPhrase {
 		return c, tea.Quit
-
-	case "esc", "backspace":
+	}
+	if c.state == clConfirmPhrase {
+		switch key {
+		case "esc":
+			c.state = clReport
+			c.input.Blur()
+			c.input.SetValue("")
+			return c, nil
+		case "enter":
+			if strings.TrimSpace(c.input.Value()) != "DELETE "+c.remoteDest() {
+				c.err = errors.New("confirmation phrase did not match")
+				return c, nil
+			}
+			paths := c.selectedPaths()
+			c.state = clRunning
+			c.err = nil
+			c.startedAt, c.activityTick = time.Now(), 0
+			c.input.Blur()
+			return c, tea.Batch(c.executeCmd(paths), c.spinner.Tick, cleanActivityTick())
+		default:
+			var cmd tea.Cmd
+			c.input, cmd = c.input.Update(msg)
+			return c, cmd
+		}
+	}
+	if key == "esc" || key == "backspace" {
 		switch c.state {
-		case clRunning, clDryRunning:
-			return c, nil // don't leave mid-operation
-		case clConfirmForce:
-			c.state = clDryDone // cancel the forced deletion
+		case clDryRunning, clRunning:
+			return c, nil
+		case clConfirmSummary:
+			c.state = clReport
 			return c, nil
 		default:
 			return c, func() tea.Msg { return goBackMsg{} }
 		}
-
-	case "f": // toggle Force where it's safe to do so
-		if c.state == clIntro || c.state == clDryDone || c.state == clError {
+	}
+	switch key {
+	case "f":
+		if c.state == clIntro || c.state == clError {
 			c.force = !c.force
 		}
-		return c, nil
-
 	case "enter":
 		switch c.state {
 		case clIntro:
-			return c.run(true) // start the dry-run preview
-		case clConfirmForce:
-			return c.run(false) // confirmed forced deletion
+			return c.startPreview()
+		case clConfirmSummary:
+			c.state = clConfirmPhrase
+			c.input.SetValue("")
+			c.err = nil
+			return c, c.input.Focus()
 		case clDone, clError:
 			return c, func() tea.Msg { return goBackMsg{} }
 		}
-		return c, nil
-
-	case "r": // re-run the dry-run preview
-		if c.state == clDryDone || c.state == clError {
-			return c.run(true)
+	case "r":
+		if c.state == clReport || c.state == clOutdated || c.state == clError {
+			return c.startPreview()
 		}
-		return c, nil
-
-	case "x": // execute the real deletion
-		if c.state == clDryDone {
-			if c.force {
-				c.state = clConfirmForce // double-confirm a safety-lock bypass
-				return c, nil
+	case "up", "k":
+		if c.state == clReport && c.cursor > 0 {
+			c.cursor--
+			c.adjustOffset()
+		}
+	case "down", "j":
+		if c.state == clReport && c.cursor+1 < len(c.selected) {
+			c.cursor++
+			c.adjustOffset()
+		}
+	case " ":
+		if c.state == clReport && len(c.selected) > 0 {
+			c.selected[c.cursor] = !c.selected[c.cursor]
+		}
+	case "a":
+		if c.state == clReport {
+			all := c.selectedCount() == len(c.selected)
+			for i := range c.selected {
+				c.selected[i] = !all
 			}
-			return c.run(false)
 		}
-		return c, nil
-
-	case "y": // confirm forced deletion
-		if c.state == clConfirmForce {
-			return c.run(false)
+	case "x":
+		if c.state == clReport && c.selectedCount() > 0 {
+			c.state = clConfirmSummary
 		}
-		return c, nil
-
-	case "n": // decline forced deletion
-		if c.state == clConfirmForce {
-			c.state = clDryDone
-			return c, nil
+	case "n":
+		if c.state == clConfirmSummary {
+			c.state = clReport
 		}
-		return c, nil
 	}
 	return c, nil
 }
 
-// forceLabel renders the current Force state.
+func (c *cleanModel) adjustOffset() {
+	rows := c.listRows()
+	if c.cursor < c.offset {
+		c.offset = c.cursor
+	}
+	if c.cursor >= c.offset+rows {
+		c.offset = c.cursor - rows + 1
+	}
+}
+func (c cleanModel) listRows() int {
+	rows := c.height - 4 // title, two summary rows, and a blank line
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+func (c cleanModel) selectedCount() int {
+	n := 0
+	for _, v := range c.selected {
+		if v {
+			n++
+		}
+	}
+	return n
+}
+func (c cleanModel) selectedPaths() []string {
+	out := make([]string, 0, c.selectedCount())
+	for i, v := range c.selected {
+		if v {
+			out = append(out, c.preview.Candidates[i].Path)
+		}
+	}
+	return out
+}
+func (c cleanModel) selectedTotals() (int64, int) {
+	var bytes int64
+	unknown := 0
+	for i, v := range c.selected {
+		if !v {
+			continue
+		}
+		if c.preview.Candidates[i].Size == nil {
+			unknown++
+		} else {
+			bytes += *c.preview.Candidates[i].Size
+		}
+	}
+	return bytes, unknown
+}
+
+func formatSize(size *int64) string {
+	if size == nil {
+		return "unknown"
+	}
+	return humanize.IBytes(uint64(*size))
+}
 func (c cleanModel) forceLabel() string {
 	if c.force {
 		return warnStyle.Render("ON  ⚠ bypasses the safety lock")
@@ -199,75 +324,173 @@ func (c cleanModel) View() string {
 	case clIntro:
 		return c.introView()
 	case clDryRunning:
-		return outputView(c.spinner.View()+" Previewing deletions (dry-run)…", c.output, c.height)
-	case clDryDone:
-		heading := titleStyle.Render("Dry-run complete — nothing deleted yet.") + "\n" +
-			subtitleStyle.Render("Force: ") + c.forceLabel()
-		return outputView(heading, c.output, c.height)
-	case clConfirmForce:
-		return c.confirmForceView()
+		return c.activityView("Validating safety lock and previewing exact candidates…")
+	case clReport:
+		return c.reportView()
+	case clConfirmSummary:
+		return c.summaryView()
+	case clConfirmPhrase:
+		return c.phraseView()
 	case clRunning:
-		return outputView(c.spinner.View()+" Deleting old remote backups…", c.output, c.height)
+		return c.activityView("Revalidating remote and deleting selected files…")
 	case clDone:
-		return outputView(titleStyle.Render("✓ Cleanup complete."), c.output, c.height)
+		return fmt.Sprintf("%s\n\nSelected: %d  Removed: %d  Failures: %d", titleStyle.Render("✓ Cleanup complete."), c.result.Selected, c.result.Removed, c.result.Failures)
+	case clOutdated:
+		return errorStyle.Render("Preview outdated — nothing was deleted.") + "\n\nThe remote path, size, or modification time changed. Run a new dry-run."
 	case clError:
-		heading := errorStyle.Render("✗ Clean aborted: "+c.err.Error()) + "\n" +
-			subtitleStyle.Render("Force: ") + c.forceLabel()
-		return outputView(heading, c.output, c.height)
+		return errorStyle.Render("✗ Clean aborted: " + c.err.Error())
 	}
 	return ""
 }
 
-// introView explains what Clean deletes and where, the safety lock, that local
-// files are handled elsewhere, and the Force toggle.
-func (c cleanModel) introView() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Clean — remove old CLOUD backups"))
-	b.WriteString("\n\n")
-
-	b.WriteString(subtitleStyle.Render("Deletes (cloud):"))
-	b.WriteString(fmt.Sprintf("\n  • Files at %s older than %d day(s).",
-		c.remoteDest(), c.cfg.RemoteRetentionDays))
-	b.WriteString("\n\n")
-
-	b.WriteString(subtitleStyle.Render("Safety lock:"))
-	b.WriteString(fmt.Sprintf("\n  • Aborts unless a backup newer than %d day(s) exists on the remote,",
-		c.cfg.RemoteCleanupSafetyDays))
-	b.WriteString("\n    guarding history if uploads silently stopped.")
-	b.WriteString("\n\n")
-
-	b.WriteString(subtitleStyle.Render("Local files are NOT touched here:"))
-	b.WriteString("\n  • " + c.localRule() + " — via Back Up Now.")
-	b.WriteString("\n\n")
-
-	b.WriteString(subtitleStyle.Render("Force: ") + c.forceLabel())
-	return b.String()
+func (c cleanModel) activityView(label string) string {
+	const segment = 5
+	width := c.width - 2
+	if width > 48 {
+		width = 48
+	}
+	if width < segment+2 {
+		width = segment + 2
+	}
+	track := width - 2
+	travel := track - segment
+	pos := 0
+	if travel > 0 {
+		pos = c.activityTick % (2 * travel)
+		if pos > travel {
+			pos = 2*travel - pos
+		}
+	}
+	bar := "[" + strings.Repeat(" ", pos) + strings.Repeat("=", segment) +
+		strings.Repeat(" ", track-pos-segment) + "]"
+	elapsed := time.Since(c.startedAt).Truncate(time.Second)
+	if c.startedAt.IsZero() || elapsed < 0 {
+		elapsed = 0
+	}
+	return fmt.Sprintf("%s %s\n\n%s\nElapsed: %s — waiting for rclone", c.spinner.View(), label, bar, elapsed)
 }
 
-// confirmForceView is the second, explicit confirmation before a forced delete.
-func (c cleanModel) confirmForceView() string {
-	var b strings.Builder
-	b.WriteString(warnStyle.Render("⚠ FORCE DELETE — confirm"))
-	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("Force mode is ON. This BYPASSES the safety lock and deletes cloud files\n"+
-		"older than %d day(s) at %s even if NO recent backup exists.\n"+
-		"This can remove your only copies.",
-		c.cfg.RemoteRetentionDays, c.remoteDest()))
-	b.WriteString("\n\n")
-	b.WriteString(errorStyle.Render("Press y to proceed, or n / esc to cancel."))
-	return b.String()
+func (c cleanModel) introView() string {
+	if c.height > 0 && c.height < 10 {
+		w := c.width
+		if w < 10 {
+			w = 10
+		}
+		lines := []string{
+			titleStyle.Render(clip("Clean — remove old CLOUD backups", w)),
+			clip(fmt.Sprintf("Cloud: %s", c.remoteDest()), w),
+			clip(fmt.Sprintf("Delete files older than %d day(s).", c.cfg.RemoteRetentionDays), w),
+			clip(fmt.Sprintf("Safety: recent backup within %d day(s).", c.cfg.RemoteCleanupSafetyDays), w),
+			clip("Local: "+c.localRule(), w),
+			subtitleStyle.Render("Force: ") + c.forceLabel(),
+		}
+		if len(lines) > c.height {
+			lines = lines[:c.height]
+		}
+		return strings.Join(lines, "\n")
+	}
+	return titleStyle.Render("Clean — remove old CLOUD backups") + fmt.Sprintf("\n\nDeletes files at %s older than %d day(s).\nRequires a recent backup within %d day(s).\n\nLocal files are NOT touched here:\n  • %s\n\n%s%s", c.remoteDest(), c.cfg.RemoteRetentionDays, c.cfg.RemoteCleanupSafetyDays, c.localRule(), subtitleStyle.Render("Force: "), c.forceLabel())
+}
+
+func (c cleanModel) reportView() string {
+	selectedBytes, selectedUnknown := c.selectedTotals()
+	header := []string{
+		titleStyle.Render(clip("Dry-run complete — nothing deleted.", c.width)),
+		clip(fmt.Sprintf("Candidates: %d  Known size: %s  Unknown sizes: %d", len(c.preview.Candidates), humanize.IBytes(uint64(c.preview.KnownBytes)), c.preview.UnknownSizes), c.width),
+		clip(fmt.Sprintf("Selected: %d  Known size: %s  Unknown sizes: %d", c.selectedCount(), humanize.IBytes(uint64(selectedBytes)), selectedUnknown), c.width),
+		"",
+	}
+
+	height := c.listRows()
+	cw := c.width - 1
+	if cw < 10 {
+		cw = 10
+	}
+	lines := make([]string, len(c.preview.Candidates))
+	for i, candidate := range c.preview.Candidates {
+		mark := "[ ]"
+		if c.selected[i] {
+			mark = "[x]"
+		}
+		cursor := "  "
+		if i == c.cursor {
+			cursor = "> "
+		}
+		line := fmt.Sprintf("%s%s %-12s %s  %s", cursor, mark, formatSize(candidate.Size), candidate.ModTime.Local().Format("2006-01-02 15:04"), candidate.Path)
+		lines[i] = clip(line, cw)
+	}
+	if len(lines) == 0 {
+		lines = []string{"No files match the retention rule."}
+	}
+	offset := c.offset
+	if max := len(lines) - height; offset > max {
+		offset = max
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	bar := scrollColumn(height, len(lines), offset)
+	rows := make([]string, height)
+	for i := 0; i < height; i++ {
+		line := ""
+		if offset+i < len(lines) {
+			line = lines[offset+i]
+		}
+		rows[i] = padLineTo(line, cw) + bar[i]
+	}
+	return strings.Join(header, "\n") + "\n" + strings.Join(rows, "\n")
+}
+
+func (c cleanModel) summaryView() string {
+	bytes, unknown := c.selectedTotals()
+	force := "Safety lock will be revalidated."
+	if c.force {
+		force = warnStyle.Render("⚠ FORCE is ON: safety lock will be bypassed.")
+	}
+	if c.height > 0 && c.height < 10 {
+		w := c.width
+		if w < 10 {
+			w = 10
+		}
+		lines := []string{
+			warnStyle.Render("Confirm cloud deletion"),
+			clip(fmt.Sprintf("Files: %d  Known: %s  Unknown: %d", c.selectedCount(), humanize.IBytes(uint64(bytes)), unknown), w),
+			clip("Remote: "+c.remoteDest(), w),
+			fmt.Sprintf("Retention: %d day(s)", c.cfg.RemoteRetentionDays),
+			force,
+			"Enter to continue; esc to cancel.",
+		}
+		if len(lines) > c.height {
+			lines = lines[:c.height]
+		}
+		return strings.Join(lines, "\n")
+	}
+	return warnStyle.Render("Confirm cloud deletion") + fmt.Sprintf("\n\nFiles: %d  Known size: %s  Unknown sizes: %d\nRemote: %s\nRetention: %d day(s)\n%s\n\nPress enter to continue to typed confirmation, or esc to cancel.", c.selectedCount(), humanize.IBytes(uint64(bytes)), unknown, c.remoteDest(), c.cfg.RemoteRetentionDays, force)
+}
+
+func (c cleanModel) phraseView() string {
+	want := "DELETE " + c.remoteDest()
+	extra := ""
+	if c.err != nil {
+		extra = "\n" + errorStyle.Render(c.err.Error())
+	}
+	return errorStyle.Render("Final confirmation") + "\n\nType exactly: " + want + "\n\n" + c.input.View() + extra
 }
 
 func (c cleanModel) footerHint() string {
 	switch c.state {
 	case clIntro:
 		return "enter dry-run • f toggle force • esc back"
-	case clDryDone:
-		return "x execute • r re-run dry-run • f toggle force • esc back"
-	case clConfirmForce:
-		return "y confirm force delete • n/esc cancel"
+	case clReport:
+		return "↑/↓ navigate • space toggle • a all/none • x delete • r preview • esc back"
+	case clConfirmSummary:
+		return "enter typed confirmation • esc cancel"
+	case clConfirmPhrase:
+		return "enter confirm • esc cancel"
+	case clOutdated:
+		return "r new dry-run • esc back"
 	case clError:
-		return "r re-run dry-run • f toggle force • enter/esc back"
+		return "r retry • enter/esc back"
 	case clDone:
 		return "enter/esc back • q quit"
 	default:

@@ -37,6 +37,7 @@ type UploadResult struct {
 // A SYNC SUMMARY block is appended to the log at the end of every run.
 func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logger, opts UploadOptions) (UploadResult, error) {
 	res := UploadResult{Status: "SUCCESS"}
+	var failures []string
 
 	if err := cfg.Validate(); err != nil {
 		log.Errorf("%v", err)
@@ -57,6 +58,7 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 		name := filepath.Base(folder)
 		if fi, err := os.Stat(folder); err != nil || !fi.IsDir() {
 			log.Warnf("   ⚠ Source folder not found, skipping: %s", folder)
+			failures = append(failures, fmt.Sprintf("%s: source folder not found", name))
 			res.UploadErrors++
 			continue
 		}
@@ -77,7 +79,8 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 
 		dst := joinRemote(cfg.RemoteName, cfg.RemoteDestination, name)
 		if err := rc.Copy(ctx, folder, dst, copyOpts, log.Raw); err != nil {
-			log.Warnf("   ⚠ Sync failed for %s. Local cleanup SKIPPED.", name)
+			log.Warnf("   ⚠ Sync failed for %s: %v. Local cleanup SKIPPED.", name, err)
+			failures = append(failures, fmt.Sprintf("%s: %v", name, err))
 			res.UploadErrors++
 			log.Verbosef("   Folder time: %s", time.Since(stepStart).Round(time.Second))
 			continue
@@ -106,7 +109,7 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 	log.writeBlock(summaryBlock(cfg, res))
 
 	if res.UploadErrors > 0 {
-		return res, fmt.Errorf("%d folder(s) failed to upload", res.UploadErrors)
+		return res, fmt.Errorf("%d folder(s) failed to upload: %s", res.UploadErrors, strings.Join(failures, "; "))
 	}
 	return res, nil
 }

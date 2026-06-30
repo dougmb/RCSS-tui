@@ -8,11 +8,69 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
+	"time"
 )
+
+// ListEntry describes one file returned by rclone lsjson. Size is nil when
+// the remote does not report a size.
+type ListEntry struct {
+	Path    string
+	Size    *int64
+	ModTime time.Time
+}
+
+type listJSONEntry struct {
+	Path    string          `json:"Path"`
+	Size    json.RawMessage `json:"Size"`
+	ModTime string          `json:"ModTime"`
+	IsDir   bool            `json:"IsDir"`
+}
+
+// ListJSON recursively lists files older than minAge using rclone lsjson.
+func (c *Client) ListJSON(ctx context.Context, path, minAge string) ([]ListEntry, error) {
+	args := []string{"lsjson", path, "--recursive", "--files-only"}
+	if minAge != "" {
+		args = append(args, "--min-age", minAge)
+	}
+	out, err := c.output(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	var raw []listJSONEntry
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		return nil, fmt.Errorf("parsing rclone lsjson: %w", err)
+	}
+	entries := make([]ListEntry, 0, len(raw))
+	for _, item := range raw {
+		if item.IsDir || item.Path == "" {
+			continue
+		}
+		modTime, err := time.Parse(time.RFC3339Nano, item.ModTime)
+		if err != nil {
+			return nil, fmt.Errorf("parsing modtime for %q: %w", item.Path, err)
+		}
+		var size *int64
+		if len(item.Size) != 0 && string(item.Size) != "null" {
+			var n int64
+			if err := json.Unmarshal(item.Size, &n); err != nil {
+				return nil, fmt.Errorf("parsing size for %q: %w", item.Path, err)
+			}
+			if n >= 0 {
+				size = &n
+			}
+		}
+		entries = append(entries, ListEntry{Path: item.Path, Size: size, ModTime: modTime})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	return entries, nil
+}
 
 // DefaultBin is the rclone executable name looked up on the PATH.
 const DefaultBin = "rclone"
@@ -178,6 +236,42 @@ func (c *Client) Delete(ctx context.Context, path string, opts DeleteOptions, on
 	return c.stream(ctx, onLine, args...)
 }
 
+// DeleteFiles deletes only paths present in files using a temporary
+// --files-from-raw manifest. CR and LF are rejected because they alter manifest boundaries.
+func (c *Client) DeleteFiles(ctx context.Context, path string, files []string, dryRun bool, logLevel string, onLine func(string)) error {
+	if len(files) == 0 {
+		return errors.New("refusing empty delete manifest")
+	}
+	for _, file := range files {
+		if file == "" || strings.ContainsAny(file, "\r\n") {
+			return fmt.Errorf("invalid manifest path %q", file)
+		}
+	}
+	f, err := os.CreateTemp("", "rcss-clean-*")
+	if err != nil {
+		return fmt.Errorf("creating delete manifest: %w", err)
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	for _, file := range files {
+		if _, err = fmt.Fprintln(f, file); err != nil {
+			f.Close()
+			return fmt.Errorf("writing delete manifest: %w", err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing delete manifest: %w", err)
+	}
+	args := []string{"delete", path, "--files-from-raw", name}
+	if dryRun {
+		args = append(args, "--dry-run")
+	}
+	if logLevel != "" {
+		args = append(args, "--log-level", logLevel)
+	}
+	return c.stream(ctx, onLine, args...)
+}
+
 // output runs an rclone command and returns its stdout, capturing stderr for
 // error context. Use for short, list-style commands.
 func (c *Client) output(ctx context.Context, args ...string) (string, error) {
@@ -187,8 +281,8 @@ func (c *Client) output(ctx context.Context, args ...string) (string, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())
-		if msg != "" {
-			return "", fmt.Errorf("rclone %s: %w: %s", args[0], err, msg)
+		if summary := summarizeFailure(strings.Split(msg, "\n")); summary != "" {
+			return "", fmt.Errorf("rclone %s: %s: %w", args[0], summary, err)
 		}
 		return "", fmt.Errorf("rclone %s: %w", args[0], err)
 	}
@@ -219,17 +313,70 @@ func (c *Client) stream(ctx context.Context, onLine func(string), args ...string
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	scanner.Split(scanLinesOrCR)
+	var recent []string
 	for scanner.Scan() {
+		line := scanner.Text()
+		recent = append(recent, line)
+		if len(recent) > 200 {
+			recent = recent[len(recent)-200:]
+		}
 		if onLine != nil {
-			onLine(scanner.Text())
+			onLine(line)
 		}
 	}
 	pr.Close()
 
 	if err := cmd.Wait(); err != nil {
+		if summary := summarizeFailure(recent); summary != "" {
+			return fmt.Errorf("rclone %s: %s: %w", args[0], summary, err)
+		}
 		return fmt.Errorf("rclone %s: %w", args[0], err)
 	}
 	return nil
+}
+
+// summarizeFailure turns verbose provider responses into a concise error.
+func summarizeFailure(lines []string) string {
+	joined := strings.Join(lines, "\n")
+	lower := strings.ToLower(joined)
+	switch {
+	case strings.Contains(lower, "ratelimitexceeded"), strings.Contains(lower, "userratelimitexceeded"):
+		return "Google Drive rate limit exceeded; retry later or request a higher quota"
+	case strings.Contains(lower, "storagequotaexceeded"):
+		return "Google Drive storage quota exceeded; free space or increase storage"
+	}
+
+	message := jsonStringField(lines, "message")
+	reason := jsonStringField(lines, "reason")
+	if message != "" && reason != "" && !strings.Contains(strings.ToLower(message), strings.ToLower(reason)) {
+		return message + " (" + reason + ")"
+	}
+	if message != "" {
+		return message
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if strings.Contains(line, "ERROR :") && len(line) <= 500 {
+			return line
+		}
+	}
+	return ""
+}
+
+func jsonStringField(lines []string, field string) string {
+	prefix := `"` + field + `":`
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		raw := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, prefix), ","))
+		var value string
+		if json.Unmarshal([]byte(raw), &value) == nil {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // scanLinesOrCR is a bufio.SplitFunc that yields a token at each "\n" or "\r",

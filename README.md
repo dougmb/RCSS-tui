@@ -1,293 +1,210 @@
-# RCSS-tui — Rclone Cloud Simple Scripts
+# RCSS-tui
 
-A small, polished **terminal UI** (and headless CLI) for managing per-project
-backups on any cloud remote supported by [`rclone`](https://rclone.org) —
-typically Google Drive. RCSS uploads each project folder, prunes old backups
-locally and in the cloud, restores files, and can schedule itself through your
-operating system's scheduler (crontab on Linux/macOS, Task Scheduler on
-Windows). It runs on Linux, macOS, and Windows, and supports multiple fully
-isolated accounts (one per rclone remote).
+RCSS-tui is a terminal backup manager powered by [`rclone`](https://rclone.org).
+It provides a friendly terminal UI for backup, restore, cleanup, and scheduling,
+plus headless commands for automation.
 
-It is a **pure Go** application built on [Bubbletea](https://github.com/charmbracelet/bubbletea):
-a single self-contained binary that drives the `rclone` binary directly. There
-are no Bash scripts and no `backup.env` — all configuration lives in one
-`config.toml`. `rclone` is the only runtime dependency and keeps your cloud
-credentials in its own config; RCSS never handles API secrets.
+It runs on Linux, macOS, and Windows and supports multiple isolated accounts—one
+for each rclone remote. RCSS never handles your cloud credentials; they remain
+in rclone's configuration.
 
-> RCSS began as three Bash scripts. Those live on as a portability reference in
-> the original repository ([`dougmb/RCSS`](https://github.com/dougmb/RCSS)); this
-> repo is the standalone Go rewrite. See `plan.md` for the port plan and the
-> confirmed design decisions.
+## How it works
 
-> **rclone is required.** RCSS drives the [`rclone`](https://rclone.org) binary
-> for every cloud operation and does nothing useful until rclone is installed
-> and has a configured remote. See [Prerequisite: rclone](#prerequisite-rclone)
-> before your first run.
+Choose one or more local folders and an rclone remote. Each folder is uploaded
+as a separate backup using its folder name:
 
-## Stack
+```text
+/home/me/Documents  ──►  drive:Backups/Documents
+/home/me/Projects   ──►  drive:Backups/Projects
+```
 
-- `charmbracelet/bubbletea` — framework (Elm architecture)
-- `charmbracelet/lipgloss` — styles / theme
-- `charmbracelet/bubbles` — list, filepicker, viewport, progress, spinner, textinput
-- `BurntSushi/toml` — config file
-- Runtime: the `rclone` binary on your `PATH`
+Uploads are one-way. Local files are kept by default, and optional local cleanup
+only runs after a successful upload.
+
+## Requirements
+
+- [`rclone`](https://rclone.org/downloads/) installed and available on `PATH`
+- at least one configured rclone remote
+- a terminal of at least **80×14** for the UI
+
+Check rclone and create a remote:
+
+```bash
+rclone version
+rclone config
+```
+
+A remote named `drive` appears in RCSS as `drive:`. You can also open rclone's
+setup from the **Rclone Account** screen.
 
 ## Install
 
 ```bash
-# Requires Go and rclone on your PATH
 git clone https://github.com/dougmb/RCSS-tui.git
 cd RCSS-tui
 go build -o rcss .
 ./rcss
 ```
 
-You also need **rclone** installed with at least one configured remote — see
-[Prerequisite: rclone](#prerequisite-rclone) next.
+Move the binary to a directory on your `PATH` if you want to run `rcss` from
+anywhere.
 
-## Prerequisite: rclone
+## Quick start
 
-RCSS is a front-end for [`rclone`](https://rclone.org): it shells out to the
-`rclone` binary for every upload, restore, and cleanup, and relies on rclone to
-keep your cloud credentials in its own config. Install rclone and configure at
-least one remote before RCSS can back anything up.
+1. Run `rcss`.
+2. Open **Rclone Account** and select a remote.
+3. Open **Backup source**. Press `a` to add each folder, then `enter` to save.
+4. Optionally use **Settings** to set a remote destination, exclusions, and
+   retention rules.
+5. Open **Back Up Now**, confirm the destination, and press `enter`.
+6. Optionally use **Schedule** to automate uploads and cloud cleanup.
 
-### Installing rclone
+If rclone is missing, the UI still opens, but cloud operations remain locked.
 
-The official script installs the latest rclone on Linux and macOS:
+## Main screens
 
-```bash
-sudo -v ; curl https://rclone.org/install.sh | sudo bash
-```
-
-Or use your package manager:
-
-| Platform | Command |
+| Screen | Purpose |
 | --- | --- |
-| Arch Linux | `sudo pacman -S rclone` |
-| Debian / Ubuntu | `sudo apt install rclone` |
-| Fedora | `sudo dnf install rclone` |
-| openSUSE | `sudo zypper install rclone` |
-| macOS (Homebrew) | `brew install rclone` |
-| Windows (winget) | `winget install Rclone.Rclone` |
+| **Rclone Account** | Add, select, switch, or forget an account |
+| **Backup source** | Manage the local folders backed up by the active account |
+| **Back Up Now** | Upload all source folders with live progress |
+| **Restore** | Browse remote backups and restore a file or folder |
+| **Clean** | Preview, select, and delete expired cloud backups |
+| **Settings** | Configure destinations, retention, exclusions, and local cleanup |
+| **Schedule** | Schedule Upload and Clean through the operating system |
+| **Logs** | View the active account's backup log |
+| **About** | View version, dependency status, and config locations |
 
-On Windows you can instead use `scoop install rclone`, `choco install rclone`, or
-download the zip from [rclone.org/downloads](https://rclone.org/downloads/) and
-add `rclone.exe` to your `PATH`. Distro packages (apt/dnf/…) can lag a few
-releases behind the official script.
+Common keys:
 
-Confirm it's on your `PATH`:
-
-```bash
-rclone version
-```
-
-### Configuring a remote (Google Drive example)
-
-Create a remote with the interactive wizard:
-
-```bash
-rclone config
-```
-
-Then, for Google Drive:
-
-1. `n` — **New remote**.
-2. Name it, e.g. `drive` (this name becomes the account key in RCSS).
-3. Storage type: choose `drive` (Google Drive).
-4. `client_id` / `client_secret`: leave **blank** to use rclone's defaults.
-5. Scope: `1` (full access) is the usual choice.
-6. `root_folder_id` / `service_account_file`: leave blank.
-7. Edit advanced config? `N`.
-8. Use auto config? `Y` — rclone opens your browser to authorize Google.
-9. Confirm `y` to save.
-
-You now have a `drive:` remote. RCSS refers to remotes **with the trailing
-colon** (`drive:`) and stores each project at `<remote>/<destination>/<project>/`.
-The destination folder is configurable (in **Settings**, and editable when you
-run a backup); it defaults to **blank**, meaning the account root —
-`<remote>/<project>/`.
-
-> You can also run this wizard **from inside RCSS**: on the **Rclone Account**
-> screen choose `＋ Configure a new account…`, which suspends the UI, runs
-> `rclone config`, then returns.
-
-### Encrypting backups (rclone crypt)
-
-To encrypt file names and contents in the cloud, wrap your remote with rclone's
-[`crypt`](https://rclone.org/crypt/) backend. Run `rclone config` again and add a
-second remote:
-
-1. `n` — **New remote**; name it e.g. `secret`.
-2. Storage type: `crypt`.
-3. `remote`: the path to encrypt, e.g. `drive:Encrypted` (a folder on the remote
-   configured above).
-4. `filename_encryption`: `standard` (also encrypts file names).
-5. `directory_name_encryption`: `true`.
-6. Set a **password** (and optionally a second password/salt) — let rclone
-   generate strong ones if you prefer.
-7. Confirm to save.
-
-Now point RCSS at the **`secret:`** remote instead of `drive:` (select it on the
-**Rclone Account** screen). Encryption is fully transparent to RCSS: it uploads,
-lists, and restores through the crypt remote, while everything stored on Google
-Drive is encrypted. A plain account and an encrypted one can even coexist as two
-separate RCSS accounts.
-
-> **Keep your crypt password safe.** It is the only key to your encrypted
-> backups — rclone does not store a recoverable copy. If you lose it, the
-> backups are unrecoverable. See the [crypt docs](https://rclone.org/crypt/) for
-> details.
-
-## Usage
-
-### Quick start — a complete walkthrough
-
-A first run, end to end:
-
-1. **Launch** the UI: `rcss`.
-2. **Rclone Account** — pick your remote (or `＋ Configure a new account…` to run
-   `rclone config`). The first time you select a remote, RCSS seeds sensible
-   defaults and makes it the active account (the sidebar shows `● active`).
-3. **Backup source** — browse with `→`/`l` to drill in and `←`/`h` to go up,
-   then press `enter` on the folder whose **sub-folders are your projects**.
-4. *(optional)* **Settings** — one scrollable page; toggles like “Delete local
-   after upload” and “Skip file formats” expand (▾) to reveal their own options,
-   and the focused item's help shows in the status bar; saved with a confirmation.
-5. **Back Up Now** — the remote destination is pre-filled from Settings (blank =
-   account root) and **editable** to confirm before you start; press `enter` to
-   begin the one-way upload. Progress streams live and it finishes with
-   `✓ Backup … in <duration>`. (Edits here apply to this run only.)
-6. **Schedule** — a single editor (pre-filled with whatever is already
-   scheduled) where the **Upload** and **Clean** jobs are each toggled on/off and
-   set to **Daily** or **Weekly on a chosen weekday** at a time: `↑/↓` move
-   between fields, `←/→` change a value, `space` toggles a job, type digits for
-   the time, `enter` saves with inline confirmation. RCSS installs the matching
-   crontab / Task Scheduler jobs for this account — no root/admin needed.
-7. **Restore** — pick a project (📁) → pick a file (or a loose file 📄) → confirm
-   the **local destination** (pre-filled from Settings, editable) → `enter`
-   restores it with progress.
-8. **Clean** — press `enter` for a dry-run **preview**, then `x` to execute the
-   real deletion of old **cloud** backups. `f` toggles **Force** (bypasses the
-   safety lock) and is double-confirmed.
-
-The scheduled jobs simply run the headless commands described under
-[Headless (for cron)](#headless-for-cron) below.
-
-### Terminal UI
-
-```bash
-rcss
-```
-
-Opens the full UI. From the main menu:
-
-| Screen | What it does |
+| Key | Action |
 | --- | --- |
-| **Rclone Account** | Manage accounts (one per rclone remote): switch the active one, add via `rclone config`, or forget one |
-| **Backup source** | Choose the local root folder whose sub-folders are your projects |
-| **Restore** | Browse remote projects → files and restore one, with live progress |
-| **Back Up Now** | Copy all projects to the cloud now (one-way upload), streaming rclone progress |
-| **Clean** | Remove old **cloud** backups: explains the criteria, previews with a dry-run, then deletes; optional Force (double-confirmed) bypasses the safety lock |
-| **Settings** | One scrollable page; toggles expand (▾) to reveal their sub-settings and the focused item's help shows in a status bar; saved to `config.toml` with a visible confirmation |
-| **Schedule** | Toggle and time the Upload / Clean jobs (daily, or weekly on a chosen weekday) in one editor, pre-filled with the current schedule; installs them into your OS scheduler (crontab / Task Scheduler) |
-| **Logs** | Scroll the sync log with ERROR/WARN highlighting |
-| **About** | Version, rclone/scheduler status, and config/log locations |
+| `↑` / `↓` or `j` / `k` | Move |
+| `enter` or `→` | Select or open |
+| `esc` | Go back |
+| `1`–`9` | Jump to a screen |
+| `/` | Filter a list |
+| `?` | Show keyboard help |
+| `q` or `ctrl+c` | Quit |
 
-The UI requires a terminal of at least **80×14**; anything smaller renders a
-single centered notice (`Not enough space to render panels`).
+The footer shows the keys available on the current screen.
 
-Global keys: `↑/↓` move · `enter`/`→` open · `1`–`9` jump to a screen (incl.
-`9` About) · `esc` back · `/` filter (in lists) · `?` keyboard help · `q` /
-`ctrl+c` quit.
+## Accounts
 
-If `rclone` is not installed, the UI still opens and warns about the missing
-dependency; the cloud screens stay locked until you install it (the **Settings**
-and **Logs** screens remain usable).
+Each account maps to one rclone remote and has its own folders, destinations,
+retention rules, exclusions, log, and scheduled jobs. Forgetting an account
+removes only its RCSS settings—it does not delete the rclone remote or cloud
+data. Remote names include the trailing colon, such as `drive:`.
 
-### Multiple accounts
+## Backup and restore
 
-RCSS supports **multiple accounts — one per rclone remote — fully isolated**
-from each other: each has its own sync folder, destination, retention, log, and
-schedule. The active account is shown at the top of the sidebar and on the
-**About** screen.
+**Back Up Now** uploads every configured source folder to:
 
-From the **Rclone Account** screen: `enter` switches the active account (creating its
-settings with defaults the first time a remote is chosen), `d` forgets an
-account's RCSS settings (the rclone remote itself is left intact), and
-**Configure a new account…** opens `rclone config` to add a remote. Settings,
-Schedule, Restore, etc. all act on the active account.
+```text
+<remote>/<remote destination>/<source folder name>/
+```
 
-### Headless (for cron)
+A blank remote destination means the remote root. The destination from
+**Settings** can be changed for one run before the upload starts.
 
-The same backup engine runs without the UI — this is exactly what the Schedule
-screen registers with your OS scheduler (per account):
+**Restore** lets you browse backups, choose a file or folder, and confirm the
+local destination. Restore output is shown in the terminal and is not appended
+to the backup log.
+
+## Cleanup and safety
+
+Local and cloud cleanup are separate operations.
+
+Local cleanup is disabled by default. When enabled, it runs only after that
+source uploads successfully. Failed uploads and excluded files never trigger
+local deletion. A `retention_days` value of `0` removes uploaded local files
+immediately after success.
+
+**Clean** finds cloud files older than `remote_retention_days`. The UI first
+creates a dry-run preview so you can review and select candidates.
+
+Cleanup is blocked unless the remote has a backup newer than
+`remote_cleanup_safety_days`. Force mode bypasses this lock and requires an
+additional typed confirmation in the UI.
+
+## Scheduling
+
+Upload and Clean can run daily or weekly at a selected time. On Linux and macOS,
+RCSS changes only its `# >>> RCSS-managed >>>` to `# <<< RCSS-managed <<<`
+crontab block. On Windows, it owns tasks named `RCSS-<account>-Upload` and
+`RCSS-<account>-Clean`. Other scheduled entries are preserved.
+
+## Headless CLI
 
 ```bash
-rcss upload [-v] [-p] [--account NAME]            # back up an account's projects
-rcss clean  [-v] [--dry-run] [--force] [--account NAME]   # remove old cloud backups
+rcss upload [-v] [-p] [--account NAME]
+rcss clean  [-v] [--dry-run] [--force] [--account NAME]
 rcss help
 ```
 
-`--account NAME` is the rclone remote (e.g. `drive:`); it defaults to the active
-account.
+| Option | Meaning |
+| --- | --- |
+| `-v` | Show verbose output |
+| `-p` | Show rclone transfer progress during upload |
+| `--dry-run` | Preview cloud cleanup without deleting files |
+| `--force` | Bypass the cloud cleanup safety lock |
+| `--account NAME` | Use a remote such as `drive:` instead of the active account |
+
+Examples:
+
+```bash
+rcss upload -p
+rcss upload --account "work:"
+rcss clean --dry-run --account "drive:"
+```
 
 ## Configuration
 
-Settings live in a single TOML file at `~/.config/rcss/config.toml` (respecting
-`XDG_CONFIG_HOME`), created on first run and edited from the UI. It holds an
-`active_account` and an `[[accounts]]` array — one entry per account — with
-**no API secrets** (those stay in rclone's own config), so it is naturally
-outside the repository. A legacy single-account config from older RCSS versions
-is migrated automatically on first load.
-
-Each account entry has these fields:
+Settings are stored in `~/.config/rcss/config.toml`; `XDG_CONFIG_HOME` is
+respected. The file contains no cloud credentials.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `remote_name` | — | rclone remote, e.g. `drive:` (the account key) |
-| `source_root` | — | local folder whose sub-folders are projects |
-| `remote_destination` | `` (blank) | destination folder on the remote; **blank = the account root** |
-| `restore_destination` | `` (blank) | local folder restores are written to; **blank = the backup source** |
-| `delete_after_upload` | `false` | enable local cleanup after a successful upload; **off keeps all local files** |
-| `retention_days` | `0` | when `delete_after_upload` is on, keep local files this many days (**0 = delete all**); ignored when off |
-| `remote_retention_days` | `15` | delete **cloud** files older than this on clean |
-| `remote_cleanup_safety_days` | `2` | clean is blocked unless a backup newer than this exists |
-| `skip_formats` | `` (blank) | file patterns excluded from uploads; a token like `tmp` means `*.tmp`, while `.*`, `*.log`, or `node_modules/**` are used verbatim (so `.*` skips dotfiles) |
-| `ignored_folders` | `scripts config bin logs lost+found` | sub-folders never treated as projects |
-| `log_file` | (config dir)/`backup-<account>.log` | append-only run log (per account) |
+| `remote_name` | — | rclone remote and account key |
+| `source_folders` | `[]` | local folders uploaded as separate backups |
+| `remote_destination` | blank | remote folder; blank means the remote root |
+| `restore_destination` | blank | restore folder; blank uses the matching source |
+| `delete_after_upload` | `false` | enable local cleanup after successful uploads |
+| `retention_days` | `0` | local retention when cleanup is enabled |
+| `remote_retention_days` | `15` | age at which cloud files become cleanup candidates |
+| `remote_cleanup_safety_days` | `2` | required recency of the newest remote backup |
+| `skip_formats` | `[]` | exclusions such as `*.log` or `node_modules/**` |
+| `ignored_folders` | `[]` | directory names excluded inside each source |
+| `log_file` | per-account file | append-only backup log |
 
-## Safety guarantees
+Older single-account configurations are migrated automatically.
 
-- **Local cleanup is off by default and only runs after a successful upload** of
-  that project — a failed upload never removes local data, and with
-  `delete_after_upload` off nothing local is ever deleted. Files excluded by
-  `skip_formats` are never deleted locally (they were not uploaded).
-- **Remote cleanup is locked** unless a recent backup (within
-  `remote_cleanup_safety_days`) exists on the remote, so a silently-stopped
-  upload cron cannot let cleanup wipe your history. `--force` bypasses the lock
-  and is intentionally dangerous.
-- In the UI, **Clean always previews with a dry-run first**; the real deletion
-  requires an explicit keypress. Clean only ever deletes **cloud** files — local
-  files are pruned by Back Up Now. The optional **Force** toggle bypasses the
-  safety lock and is double-confirmed in the UI (and is `--force` headless).
-- Scheduling only ever touches RCSS-managed entries: a single delimited
-  `# >>> RCSS-managed >>>` … `# <<< RCSS-managed <<<` block in your crontab on
-  Unix, or `RCSS-<account>-Upload` / `RCSS-<account>-Clean` tasks on Windows.
-  Every other entry is preserved, clearing the schedule removes just those,
-  and neither needs root/admin rights.
+## Encrypted backups
 
-## Project layout
+RCSS supports rclone's [`crypt`](https://rclone.org/crypt/) backend. Create a
+crypt remote with `rclone config`, then select it in RCSS. Keep its password
+safe—encrypted backups cannot be recovered without it.
 
+## Development
+
+```bash
+go build ./...
+go vet ./...
+go test -race ./...
 ```
-main.go      entrypoint: no args → TUI; `upload`/`clean` → headless (cron)
-config/      config.toml model + Load/Save + defaults
-rclone/      thin wrapper over the rclone binary (ListRemotes, Lsf, Copy, Delete)
-backup/      ported Upload / Clean / Restore + logging (safety invariants)
-scheduler/   install/remove RCSS jobs in the OS scheduler (crontab / Task Scheduler)
-tui/         Bubbletea root model + styles + one file per screen
+
+```text
+main.go      TUI and headless CLI entrypoint
+config/      account configuration and persistence
+rclone/      rclone command wrapper
+backup/      upload, restore, cleanup, and logging
+scheduler/   crontab and Windows Task Scheduler integration
+tui/         Bubble Tea screens and styles
 ```
+
+RCSS-tui is the Go successor to the original Bash-based
+[`dougmb/RCSS`](https://github.com/dougmb/RCSS) project.
 
 ## License
 
-Released under the [MIT License](LICENSE).
+[MIT](LICENSE)

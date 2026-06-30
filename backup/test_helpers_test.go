@@ -19,6 +19,8 @@ func fakeRclone(t *testing.T) string {
 		script := "@echo off\r\n" +
 			"echo %*>>\"%RCSS_FAKE_OUTPUT%\"\r\n" +
 			"if \"%1\"==\"lsf\" if defined RCSS_FAKE_LSF echo %RCSS_FAKE_LSF%\r\n" +
+			"if \"%1\"==\"lsjson\" echo %RCSS_FAKE_LSJSON%\r\n" +
+			"if \"%1\"==\"delete\" if \"%3\"==\"--files-from-raw\" type \"%4\">>\"%RCSS_FAKE_MANIFEST%\"\r\n" +
 			"if \"%1\"==\"copy\" if \"%RCSS_FAKE_FAIL_COPY%\"==\"1\" exit /b 1\r\n" +
 			"exit /b 0\r\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
@@ -32,6 +34,12 @@ func fakeRclone(t *testing.T) string {
 printf '%s\n' "$*" >> "$RCSS_FAKE_OUTPUT"
 if [ "$1" = "lsf" ] && [ -n "$RCSS_FAKE_LSF" ]; then
 	printf '%s\n' "$RCSS_FAKE_LSF"
+fi
+if [ "$1" = "lsjson" ]; then
+	printf '%s\n' "$RCSS_FAKE_LSJSON"
+fi
+if [ "$1" = "delete" ] && [ "$3" = "--files-from-raw" ]; then
+	cat "$4" >> "$RCSS_FAKE_MANIFEST"
 fi
 if [ "$1" = "copy" ] && [ "$RCSS_FAKE_FAIL_COPY" = "1" ]; then
 	exit 1

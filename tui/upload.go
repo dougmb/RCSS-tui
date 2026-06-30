@@ -78,7 +78,11 @@ func (u uploadModel) start() (uploadModel, tea.Cmd) {
 	cfg, rc := u.cfg, u.rc
 	go func() {
 		logPath, _ := cfg.ResolveLogFile()
-		log, _ := backup.NewLogger(logPath, stream.sink(), false)
+		log, err := backup.NewLogger(logPath, stream.sink(), true)
+		if err != nil {
+			stream.finishWith(backup.UploadResult{}, err)
+			return
+		}
 		res, err := backup.Upload(context.Background(), cfg, rc, log,
 			backup.UploadOptions{ShowProgress: true})
 		log.Close()
@@ -147,6 +151,24 @@ func (u uploadModel) Update(msg tea.Msg) (uploadModel, tea.Cmd) {
 func (u uploadModel) View() string {
 	switch u.state {
 	case upIdle:
+		if u.height > 0 && u.height < 10 {
+			w := u.width
+			if w < 10 {
+				w = 10
+			}
+			lines := []string{
+				titleStyle.Render("Back Up Now"),
+				subtitleStyle.Render(clip(fmt.Sprintf("Sources: %d folder(s)", len(u.cfg.SourceFolders)), w)),
+				subtitleStyle.Render(clip("Remote: "+u.cfg.RemoteName, w)),
+				subtitleStyle.Render(clip("Destination (blank = root):", w)),
+				u.destInput.View(),
+				"Press enter to start.",
+			}
+			if len(lines) > u.height {
+				lines = lines[:u.height]
+			}
+			return strings.Join(lines, "\n")
+		}
 		var b strings.Builder
 		b.WriteString(titleStyle.Render("Back Up Now"))
 		b.WriteString("\n\n")

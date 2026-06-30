@@ -178,9 +178,9 @@ func (b backupsModel) startRestore(item backup.RemoteEntry, outputPath string) (
 	go func() {
 		// Restore logs to the terminal only (no backup log), like the original
 		// restoreBackup.sh; the sink streams every line to the UI.
-		log, _ := backup.NewLogger("", stream.sink(), false)
+		log, _ := backup.NewLogger("", stream.sink(), true)
 		err := backup.Restore(context.Background(), cfg, rc, log, rel,
-			backup.RestoreOptions{ShowProgress: true, IsDir: item.IsDir, OutputPath: outputPath})
+			backup.RestoreOptions{ShowProgress: true, Verbose: true, IsDir: item.IsDir, OutputPath: outputPath})
 		log.Close()
 		stream.finish(err)
 	}()

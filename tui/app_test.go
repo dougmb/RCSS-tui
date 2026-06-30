@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/dougmb/rcss-tui/backup"
 	"github.com/dougmb/rcss-tui/config"
 	"github.com/dougmb/rcss-tui/rclone"
 )
@@ -122,9 +123,8 @@ func TestAboutReachableAndRenders(t *testing.T) {
 	}
 }
 
-// TestCleanForceDoubleConfirm checks the Force toggle and that executing a
-// forced deletion requires the extra confirmation step (and can be cancelled).
-func TestCleanForceDoubleConfirm(t *testing.T) {
+// TestCleanSelectionAndConfirm checks selection and the two confirmation stages.
+func TestCleanSelectionAndConfirm(t *testing.T) {
 	cfg := config.Config{RemoteName: "r:", RemoteDestination: "Backups", RemoteRetentionDays: 15, RemoteCleanupSafetyDays: 2}
 	c := newCleanModel(cfg, missingRclone())
 	if c.state != clIntro {
@@ -138,15 +138,22 @@ func TestCleanForceDoubleConfirm(t *testing.T) {
 	if !c.force {
 		t.Fatal("expected force on after 'f'")
 	}
-	// After a (simulated) dry-run, 'x' with force on must ask for confirmation.
-	c.state = clDryDone
+	size := int64(42)
+	c.state = clReport
+	c.preview = backup.CleanPreview{Candidates: []backup.CleanupCandidate{{Path: "old/file", Size: &size}}}
+	c.selected = []bool{true}
 	c, _ = c.Update(keyRune('x'))
-	if c.state != clConfirmForce {
-		t.Fatalf("expected clConfirmForce after x with force on, got %v", c.state)
+	if c.state != clConfirmSummary {
+		t.Fatalf("expected summary confirmation after x, got %v", c.state)
 	}
-	c, _ = c.Update(keyRune('n'))
-	if c.state != clDryDone {
-		t.Fatalf("expected cancel back to clDryDone, got %v", c.state)
+	c, _ = c.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if c.state != clReport {
+		t.Fatalf("expected cancel back to report, got %v", c.state)
+	}
+	c, _ = c.Update(keyRune(' '))
+	c, _ = c.Update(keyRune('x'))
+	if c.state != clReport {
+		t.Fatal("empty selection must block deletion")
 	}
 }
 
