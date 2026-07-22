@@ -180,8 +180,14 @@ func TestSettingsStatusHint(t *testing.T) {
 	s := newSettingsModel(config.Config{RemoteName: "drive:"})
 	s.setSize(80, 24)
 
-	if h := s.statusHint(); !strings.Contains(h, "remote") {
+	if h := s.statusHint(); !strings.Contains(h, "Backups/Projects") {
 		t.Errorf("status hint for first field = %q", h)
+	}
+	for _, key := range []string{"restore", "log"} {
+		i := s.fieldIndex(key)
+		if h := s.fields[i].help; !strings.Contains(h, "Example:") {
+			t.Errorf("status hint for %s = %q, want an example", key, h)
+		}
 	}
 	// Jump focus to the Save row.
 	s.focus = len(s.visibleIndices())

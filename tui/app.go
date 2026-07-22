@@ -615,7 +615,7 @@ func infoLine(label, value string) string {
 	if value == "" {
 		value = "—"
 	}
-	return subtitleStyle.Render(label+": ") + value
+	return subtitleStyle.Render(label+": ") + valueStyle.Render(value)
 }
 
 // destinationLabel renders a remote destination for display, naming the empty

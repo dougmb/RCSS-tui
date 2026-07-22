@@ -17,8 +17,8 @@ func paneStyle(active bool) lipgloss.Style {
 // the original look on dark terminals, while the Light variants keep text and
 // accents legible on light backgrounds.
 var (
-	colorAccent = lipgloss.AdaptiveColor{Light: "25", Dark: "39"}   // blue/cyan — titles, selection
-	colorMuted  = lipgloss.AdaptiveColor{Light: "240", Dark: "241"} // grey — help, subtitles
+	colorAccent = lipgloss.AdaptiveColor{Light: "25", Dark: "39"}   // blue/cyan — titles, selection, values
+	colorMuted  = lipgloss.AdaptiveColor{Light: "240", Dark: "241"} // grey — borders and scroll tracks only
 	colorWarn   = lipgloss.AdaptiveColor{Light: "130", Dark: "214"} // amber — warnings
 	colorError  = lipgloss.AdaptiveColor{Light: "124", Dark: "196"} // red — errors
 	colorOK     = lipgloss.AdaptiveColor{Light: "28", Dark: "42"}   // green — success
@@ -30,11 +30,18 @@ var (
 			Bold(true).
 			Foreground(colorAccent)
 
-	// subtitleStyle renders secondary descriptive text under a title.
-	subtitleStyle = lipgloss.NewStyle().Foreground(colorMuted)
+	// subtitleStyle renders explanatory text in the terminal's normal foreground
+	// so it remains readable on dark themes.
+	subtitleStyle = lipgloss.NewStyle()
 
-	// helpStyle renders the footer key hints.
-	helpStyle = lipgloss.NewStyle().Foreground(colorMuted)
+	// helpStyle renders readable footer key hints.
+	helpStyle = lipgloss.NewStyle()
+
+	// valueStyle distinguishes configured values from surrounding explanatory text.
+	valueStyle = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
+
+	// placeholderStyle differentiates empty-field guidance without reducing contrast.
+	placeholderStyle = lipgloss.NewStyle().Italic(true)
 
 	// errorStyle renders inline error messages and ERROR log lines.
 	errorStyle = lipgloss.NewStyle().Foreground(colorError)

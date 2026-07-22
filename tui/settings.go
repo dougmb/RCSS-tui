@@ -59,7 +59,7 @@ type settingsModel struct {
 	remoteName    string   // chosen on the Account screen, not editable here
 	sourceFolders []string // managed on the Backup source screen, carried through
 	fields        []setField
-	focus      int // index into visibleIndices(); == len means the Save action
+	focus         int // index into visibleIndices(); == len means the Save action
 
 	status string // inline validation feedback (errors only)
 	failed bool
@@ -73,52 +73,54 @@ type settingsModel struct {
 	saveErr error
 }
 
-// settingsSectionStyle renders the muted section headers between field groups.
-var settingsSectionStyle = lipgloss.NewStyle().Bold(true).Foreground(colorMuted)
+// settingsSectionStyle renders the section headers between field groups.
+var settingsSectionStyle = valueStyle
 
 func newSettingsModel(cfg config.Config) settingsModel {
 	mkInput := func(val, placeholder string) textinput.Model {
 		ti := textinput.New()
 		ti.Prompt = ""
 		ti.Placeholder = placeholder
+		ti.TextStyle = valueStyle
+		ti.PlaceholderStyle = placeholderStyle
 		ti.SetValue(val)
 		return ti
 	}
 
 	fields := []setField{
 		{key: "dest", label: "Destination folder", section: "Paths", kind: fText,
-			help: "Sub-folder on the remote for backups (blank = account root).",
+			help:        "Remote sub-folder for backups. Example: Backups/Projects (blank = account root).",
 			placeholder: "(account root)", input: mkInput(cfg.RemoteDestination, "(account root)")},
 		{key: "restore", label: "Restore destination", section: "Paths", kind: fText,
-			help: "Where restored files are written (blank = backup source).",
+			help:        "Where restored files are written. Example: /data/restored (blank = backup source).",
 			placeholder: "(backup source)", input: mkInput(cfg.RestoreDestination, "(backup source)")},
 
 		{key: "rret", label: "Remote retention (days)", section: "Cloud cleanup", kind: fNum,
-			help: "Delete cloud backups older than this when cleaning.",
+			help:  "Delete cloud backups older than this when cleaning.",
 			input: mkInput(strconv.Itoa(cfg.RemoteRetentionDays), "")},
 		{key: "safety", label: "Cleanup safety (days)", section: "Cloud cleanup", kind: fNum,
-			help: "Refuse to clean unless a backup newer than this exists on the remote.",
+			help:  "Refuse to clean unless a backup newer than this exists on the remote.",
 			input: mkInput(strconv.Itoa(cfg.RemoteCleanupSafetyDays), "")},
 
 		{key: "delaft", label: "Delete local after upload", section: "Local cleanup", kind: fBool,
 			help: "When on, prune local backups after a successful upload. Off keeps everything.",
-			on: cfg.DeleteAfterUpload},
+			on:   cfg.DeleteAfterUpload},
 		{key: "ret", label: "Keep local files for (days)", section: "Local cleanup", kind: fNum,
 			parent: "delaft", help: "Files older than this are deleted (0 = delete all immediately).",
 			input: mkInput(strconv.Itoa(cfg.RetentionDays), "")},
 
 		{key: "skipfmt", label: "Skip file formats", section: "Files", kind: fBool,
 			help: "When on, exclude matching files from uploads (e.g. tmp, log; .* skips dotfiles).",
-			on: len(cfg.SkipFormats) > 0},
+			on:   len(cfg.SkipFormats) > 0},
 		{key: "formats", label: "Formats to skip", section: "Files", kind: fText,
 			parent: "skipfmt", help: "Space-separated: 'tmp' means *.tmp; '.*' skips dotfiles.",
 			placeholder: defaultSkipFormats, input: mkInput(strings.Join(cfg.SkipFormats, " "), defaultSkipFormats)},
 		{key: "ignored", label: "Ignored folders", section: "Files", kind: fText,
-			help: "Space-separated folder names never treated as projects.",
+			help:        "Space-separated folder names never treated as projects.",
 			placeholder: "(none)", input: mkInput(strings.Join(cfg.IgnoredFolders, " "), "(none)")},
 
 		{key: "log", label: "Log file", section: "Log", kind: fText,
-			help: "Path to the backup log (blank = per-account default).",
+			help:        "Backup log path. Example: /data/logs/backup-drive.log (blank = per-account default).",
 			placeholder: "(default)", input: mkInput(cfg.LogFile, "(default)")},
 	}
 
@@ -496,15 +498,15 @@ func (s settingsModel) fieldValue(f setField, focused bool) string {
 		if focused {
 			return titleStyle.Render(txt)
 		}
-		return txt
+		return valueStyle.Render(txt)
 	}
 	if focused {
 		return f.input.View()
 	}
 	if v := f.input.Value(); v != "" {
-		return clip(v, s.valueWidth())
+		return valueStyle.Render(clip(v, s.valueWidth()))
 	}
-	return subtitleStyle.Render(f.placeholder)
+	return placeholderStyle.Render(f.placeholder)
 }
 
 // statusHint returns the help text for the focused row, shown in the root status
