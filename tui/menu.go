@@ -24,12 +24,12 @@ func newMenu() list.Model {
 	items := []list.Item{
 		menuItem{"Rclone Account", "Select or configure an rclone remote (e.g. Google Drive).", screenAccount},
 		menuItem{"Backup source", "Choose the local folders to back up; each is uploaded as its own backup.", screenFolder},
-		menuItem{"Back Up Now", "Copy all projects to the cloud now (one-way upload), with live progress.", screenUpload},
+		menuItem{"Back Up Now", "Upload your source folders to the cloud now (one-way copy), with live progress.", screenUpload},
 		menuItem{"Restore", "Browse cloud backups and restore any file or folder.", screenBackups},
 		menuItem{"Clean", "Remove old CLOUD backups beyond retention, with a dry-run preview and safety lock.", screenClean},
 		menuItem{"Settings", "Configure paths, retention, skip formats, ignored folders and cleanup behavior.", screenSettings},
-		menuItem{"Schedule", "Set up automatic backup and clean schedules via your OS scheduler (crontab / Task Scheduler).", screenSchedule},
-		menuItem{"Logs", "View the sync log with colorized ERROR and WARN entries.", screenLogs},
+		menuItem{"Schedule", "Schedule automatic backups per folder, and cleanups, via your OS scheduler (crontab / Task Scheduler).", screenSchedule},
+		menuItem{"Logs", "View this account's backup log, with ERROR and WARN entries highlighted.", screenLogs},
 		menuItem{"About", "About RCSS: version, dependency status, and config locations.", screenAbout},
 	}
 

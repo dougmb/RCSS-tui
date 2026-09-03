@@ -166,3 +166,63 @@ func TestSettingsSavedConfirmation(t *testing.T) {
 		t.Errorf("expected error view, got:\n%s", got)
 	}
 }
+
+// TestStaleAccountIsFlagged covers the case where an account outlives its rclone
+// remote (renamed or deleted in rclone config): the root must say so rather than
+// showing an active account that silently points nowhere.
+func TestStaleAccountIsFlagged(t *testing.T) {
+	store := &config.Store{
+		ActiveAccount: "gone:",
+		Accounts:      []config.Config{{RemoteName: "gone:"}},
+	}
+	m := New(store, missingRclone())
+	// Pretend a successful listing that does not contain the account's remote.
+	m.remotesKnown = true
+	m.knownRemotes = map[string]bool{"live:": true}
+
+	if !m.activeRemoteMissing() {
+		t.Fatal("expected the active account's remote to be reported missing")
+	}
+	if m.newAbout().View() == "" || !strings.Contains(m.newAbout().View(), "no longer an rclone remote") {
+		t.Errorf("About should flag the missing remote, got:\n%s", m.newAbout().View())
+	}
+
+	// A remote that does exist must not be flagged.
+	m.knownRemotes = map[string]bool{"gone:": true}
+	if m.activeRemoteMissing() {
+		t.Error("an existing remote must not be reported missing")
+	}
+	// Nor may an unreadable rclone config make every account look stale.
+	m.remotesKnown, m.knownRemotes = false, map[string]bool{}
+	if m.activeRemoteMissing() {
+		t.Error("an unknown remote list must not flag anything")
+	}
+}
+
+// TestAccountListsStaleAccounts checks the Account screen lists a configured
+// account whose remote is gone, so it can be forgotten — listing only live
+// remotes would hide it completely.
+func TestAccountListsStaleAccounts(t *testing.T) {
+	a := newAccountModel(missingRclone(), "gone:", []string{"gone:", "live:"})
+	a.setSize(60, 20)
+	upd, _ := a.Update(remotesLoadedMsg{remotes: []string{"live:"}})
+
+	var stale *remoteItem
+	for _, it := range upd.list.Items() {
+		if ri, ok := it.(remoteItem); ok && ri.missing {
+			stale = &ri
+		}
+	}
+	if stale == nil {
+		t.Fatal("expected the stale account to be listed")
+	}
+	if stale.name != "gone:" {
+		t.Errorf("stale account = %q, want gone:", stale.name)
+	}
+	if !strings.Contains(stale.Title(), "remote missing") {
+		t.Errorf("title should flag it: %q", stale.Title())
+	}
+	if !strings.Contains(stale.Description(), "forget") {
+		t.Errorf("description should say how to clear it: %q", stale.Description())
+	}
+}

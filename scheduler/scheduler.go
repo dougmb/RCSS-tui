@@ -11,6 +11,8 @@ package scheduler
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -47,6 +49,32 @@ type Job struct {
 	Min     int          // 0–59
 	Weekly  bool         // false = daily; true = weekly
 	Weekday time.Weekday // day of the weekly run (0=Sun..6=Sat); used when Weekly
+	// Folder limits an Upload job to a single source folder, passed to the
+	// headless run as --folder. Empty means every folder configured for the
+	// account. Clean jobs ignore it: cleanup is per-account, not per-folder.
+	Folder string
+}
+
+// Label names the job's target for the UI: the folder's base name for a
+// per-folder upload, or "All folders" when the job covers the whole account.
+func (j Job) Label() string {
+	if j.Folder == "" {
+		return "All folders"
+	}
+	return filepath.Base(j.Folder)
+}
+
+// SameTarget reports whether two jobs address the same scheduler entry — the
+// same kind and, for uploads, the same folder. Backends key their entries on
+// this, and the UI uses it to match a stored job to its editor block.
+func (j Job) SameTarget(o Job) bool {
+	if j.Kind != o.Kind {
+		return false
+	}
+	if j.Kind == Clean {
+		return true
+	}
+	return j.Folder == o.Folder
 }
 
 // Time renders the job's time as HH:MM, or "??:??" when unknown (a backend may
@@ -72,6 +100,77 @@ func weekdayShort(d time.Weekday) string {
 	d = time.Weekday((int(d)%7 + 7) % 7)
 	return d.String()[:3]
 }
+
+// splitArgs splits a scheduled command line into tokens the way a shell would,
+// honouring double quotes and backslash escapes inside them. strings.Fields
+// cannot do this, and both backends quote paths — so a source folder like
+// "/home/u/My Documents" must stay a single token on the way back in.
+func splitArgs(line string) []string {
+	var (
+		out    []string
+		cur    strings.Builder
+		inTok  bool
+		inQuot bool
+	)
+	flush := func() {
+		if inTok {
+			out = append(out, cur.String())
+			cur.Reset()
+			inTok = false
+		}
+	}
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '"':
+			inQuot = !inQuot
+			inTok = true // an empty "" is still a token
+		case inQuot && c == '\\' && i+1 < len(line) && (line[i+1] == '"' || line[i+1] == '\\'):
+			// Honour only the two escapes the emitters actually produce (Go's %q
+			// on the crontab side). Every other backslash is literal, so a Windows
+			// path like C:\My Projects\alpha survives intact.
+			i++
+			cur.WriteByte(line[i])
+			inTok = true
+		case !inQuot && (c == ' ' || c == '\t'):
+			flush()
+		default:
+			cur.WriteByte(c)
+			inTok = true
+		}
+	}
+	flush()
+	return out
+}
+
+// flagValue returns the token following the named flag, or "" when absent.
+func flagValue(tokens []string, flag string) string {
+	for i, tok := range tokens {
+		if tok == flag && i+1 < len(tokens) {
+			return tokens[i+1]
+		}
+	}
+	return ""
+}
+
+// DaemonStatus says whether the OS component that actually runs scheduled jobs
+// is up. Registering a job with a stopped scheduler succeeds and then silently
+// never runs, which is the failure this exists to surface.
+type DaemonStatus int
+
+const (
+	// DaemonUnknown means the state could not be determined; callers must stay
+	// quiet rather than guess.
+	DaemonUnknown DaemonStatus = iota
+	// DaemonRunning means scheduled jobs will be executed.
+	DaemonRunning
+	// DaemonStopped means jobs can be registered but nothing will run them.
+	DaemonStopped
+)
+
+// Daemon reports whether the OS scheduler's daemon is running, along with a
+// short hint to show the user when it is not.
+func Daemon() (DaemonStatus, string) { return daemonState() }
 
 // Backend returns a human label for the active OS scheduler ("crontab" or
 // "Task Scheduler"), for use in UI text.

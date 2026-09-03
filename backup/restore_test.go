@@ -10,10 +10,11 @@ import (
 	"github.com/dougmb/rcss-tui/rclone"
 )
 
-// TestRestoreTarget covers the default local restore destination.
-// A configured RestoreDestination is the base; empty falls back to cwd.
-// The returned path is the parent directory into which the item will be copied,
-// preserving the remote's relative structure.
+// TestRestoreTarget covers the default local restore destination. A configured
+// RestoreDestination is always the base; with none, a backup restores to the
+// source folder it came from, and only an unmatched remote path falls back to
+// the current directory. The returned path is the parent directory the item is
+// copied into, preserving the remote's relative structure.
 func TestRestoreTarget(t *testing.T) {
 	sep := string(os.PathSeparator)
 
@@ -39,17 +40,35 @@ func TestRestoreTarget(t *testing.T) {
 		t.Errorf("empty relPath: got %q err=%v, want %q", got, err, "/restore")
 	}
 
-	// With no RestoreDestination, the base is the current directory.
-	src := config.Config{SourceFolders: []string{"/home/me/work/website"}}
+	// With no RestoreDestination, a backup goes back to the folder it came from.
+	src := config.Config{SourceFolders: []string{"/home/me/work/website", "/home/me/notes"}}
 	cwd, _ := os.Getwd()
-	if got, err := RestoreTarget(src, "website"); err != nil || got != cwd {
-		t.Errorf("no dest, root folder: got %q err=%v, want %q", got, err, cwd)
+
+	// The remote folder "website" maps to the source folder of that base name.
+	if got, err := RestoreTarget(src, "website"); err != nil || got != "/home/me/work/website" {
+		t.Errorf("no dest, root folder: got %q err=%v, want %q", got, err, "/home/me/work/website")
 	}
-	if got, err := RestoreTarget(src, "website/css/main.css"); err != nil || got != cwd+sep+"website"+sep+"css" {
-		t.Errorf("no dest, nested file: got %q err=%v, want %q", got, err, cwd+sep+"website"+sep+"css")
+	// Nested items keep their structure inside that source folder.
+	want := "/home/me/work/website" + sep + "css"
+	if got, err := RestoreTarget(src, "website/css/main.css"); err != nil || got != want {
+		t.Errorf("no dest, nested file: got %q err=%v, want %q", got, err, want)
 	}
+	// A file directly inside the backup folder lands in the source folder itself.
+	if got, err := RestoreTarget(src, "notes/todo.md"); err != nil || got != "/home/me/notes" {
+		t.Errorf("no dest, file in source: got %q err=%v, want %q", got, err, "/home/me/notes")
+	}
+	// A remote folder with no matching source falls back to the current directory.
+	if got, err := RestoreTarget(src, "archive/old.zip"); err != nil || got != cwd+sep+"archive" {
+		t.Errorf("no dest, unmatched folder: got %q err=%v, want %q", got, err, cwd+sep+"archive")
+	}
+	// Restoring the whole destination has no folder to map, so it uses the cwd.
 	if got, err := RestoreTarget(src, ""); err != nil || got != cwd {
 		t.Errorf("no dest, empty relPath: got %q err=%v, want %q", got, err, cwd)
+	}
+	// An explicit RestoreDestination still wins over the source-folder mapping.
+	both := config.Config{SourceFolders: src.SourceFolders, RestoreDestination: "/restore"}
+	if got, err := RestoreTarget(both, "website/index.html"); err != nil || got != "/restore"+sep+"website" {
+		t.Errorf("explicit dest must win: got %q err=%v", got, err)
 	}
 }
 

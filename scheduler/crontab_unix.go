@@ -136,14 +136,25 @@ func apply(account string, jobs []Job, exe, logPath string) error {
 
 // formatJobLine renders one managed crontab line for a job. Daily jobs use "*"
 // for the day-of-week field; weekly jobs set it to the weekday number (0=Sun..
-// 6=Sat).
+// 6=Sat). An upload limited to one folder carries it as --folder. Every path is
+// double-quoted so folders, binaries and logs with spaces survive both the
+// shell and the round-trip back through parseManagedLine.
+//
+// Only stderr is appended to logPath. The headless run already writes every log
+// line to that same file through the Logger and merely echoes them to stdout for
+// cron's mail; redirecting stdout there too would record each line twice.
+// Keeping stderr means a failure before the Logger exists (a missing account, no
+// rclone) is still captured.
 func formatJobLine(account string, j Job, exe, logPath string) string {
 	dow := "*"
 	if j.Weekly {
 		dow = strconv.Itoa(int(j.Weekday))
 	}
-	return fmt.Sprintf(`%d %d * * %s %s %s --account %q >> %s 2>&1`,
-		j.Min, j.Hour, dow, exe, j.Kind.Arg(), account, logPath)
+	cmd := fmt.Sprintf("%q %s --account %q", exe, j.Kind.Arg(), account)
+	if j.Kind == Upload && j.Folder != "" {
+		cmd += fmt.Sprintf(" --folder %q", j.Folder)
+	}
+	return fmt.Sprintf(`%d %d * * %s %s >/dev/null 2>>%q`, j.Min, j.Hour, dow, cmd, logPath)
 }
 
 // current parses the managed crontab lines that belong to account back into
@@ -167,10 +178,11 @@ func current(account string) ([]Job, error) {
 
 // parseManagedLine parses one managed crontab line back into a Job. It reads the
 // minute/hour fields, recovers the weekday from the day-of-week field (any value
-// other than "*" means weekly; cron's 7 wraps to Sunday), and detects the kind
-// from the rcss subcommand token. Returns ok=false for malformed lines.
+// other than "*" means weekly; cron's 7 wraps to Sunday), detects the kind from
+// the rcss subcommand token, and recovers the target folder from --folder.
+// Returns ok=false for malformed lines.
 func parseManagedLine(line string) (Job, bool) {
-	f := strings.Fields(line)
+	f := splitArgs(line)
 	if len(f) < 6 {
 		return Job{}, false
 	}
@@ -195,17 +207,14 @@ func parseManagedLine(line string) (Job, bool) {
 			break
 		}
 	}
+	if j.Kind == Upload {
+		j.Folder = flagValue(f, "--folder")
+	}
 	return j, true
 }
 
-// lineAccount returns the account a managed cron line targets (the token after
-// --account, unquoted), or "" if it carries none.
+// lineAccount returns the account a managed cron line targets (the value of
+// --account), or "" if it carries none.
 func lineAccount(line string) string {
-	f := strings.Fields(line)
-	for i, tok := range f {
-		if tok == "--account" && i+1 < len(f) {
-			return strings.Trim(f[i+1], `"`)
-		}
-	}
-	return ""
+	return flagValue(splitArgs(line), "--account")
 }

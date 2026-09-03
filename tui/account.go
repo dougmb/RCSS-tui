@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"os/exec"
+	"sort"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -18,15 +19,20 @@ import (
 // account…" shells out to `rclone config`. Each account (one per rclone remote)
 // keeps its own folders, retention, log, and schedule.
 
-// remoteItem is a selectable rclone remote.
+// remoteItem is a selectable rclone remote, or an RCSS account whose remote is
+// gone (missing) — those are listed so a stale account can be seen and forgotten
+// instead of silently pointing nowhere.
 type remoteItem struct {
 	name       string
 	current    bool // the active account
 	configured bool // has stored RCSS settings
+	missing    bool // configured here, but no longer an rclone remote
 }
 
 func (i remoteItem) Title() string {
 	switch {
+	case i.missing:
+		return i.name + "  ⚠ remote missing"
 	case i.current:
 		return i.name + "  ● active"
 	case i.configured:
@@ -36,7 +42,12 @@ func (i remoteItem) Title() string {
 	}
 }
 func (i remoteItem) Description() string {
-	if i.configured {
+	switch {
+	case i.missing && i.current:
+		return "active account, but this rclone remote no longer exists — press d to forget"
+	case i.missing:
+		return "RCSS account whose rclone remote no longer exists — press d to forget"
+	case i.configured:
 		return "rclone remote · RCSS account"
 	}
 	return "rclone remote"
@@ -85,6 +96,19 @@ type accountModel struct {
 	doneAction string
 }
 
+// staleAccounts returns the configured account names that are absent from the
+// live remote set, sorted so the list order is stable between refreshes.
+func (a accountModel) staleAccounts(live map[string]bool) []string {
+	var out []string
+	for name := range a.configured {
+		if !live[name] {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func newAccountModel(rc *rclone.Client, current string, accounts []string) accountModel {
 	l := list.New(nil, list.NewDefaultDelegate(), 0, 0)
 	l.Title = "Accounts (rclone remotes)"
@@ -131,9 +155,19 @@ func (a accountModel) Update(msg tea.Msg) (accountModel, tea.Cmd) {
 	case remotesLoadedMsg:
 		a.loading = false
 		a.err = msg.err
-		items := make([]list.Item, 0, len(msg.remotes)+1)
+		live := make(map[string]bool, len(msg.remotes))
+		items := make([]list.Item, 0, len(msg.remotes)+len(a.configured)+1)
 		for _, r := range msg.remotes {
+			live[r] = true
 			items = append(items, remoteItem{name: r, current: r == a.current, configured: a.configured[r]})
+		}
+		// An account can outlive its rclone remote (renamed or deleted in rclone
+		// config). Listing only live remotes would hide it entirely, leaving the
+		// user with an active account that points nowhere and no way to clear it.
+		for _, name := range a.staleAccounts(live) {
+			items = append(items, remoteItem{
+				name: name, current: name == a.current, configured: true, missing: true,
+			})
 		}
 		items = append(items, configItem{})
 		a.list.SetItems(items)
@@ -174,6 +208,9 @@ func (a accountModel) Update(msg tea.Msg) (accountModel, tea.Cmd) {
 		case "enter":
 			switch it := a.list.SelectedItem().(type) {
 			case remoteItem:
+				if it.missing {
+					return a, nil // nothing to activate; the row says to forget it
+				}
 				name := it.name
 				a.done = true
 				a.doneAction = "activated"

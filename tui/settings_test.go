@@ -210,3 +210,51 @@ func TestSettingsViewHasScrollbar(t *testing.T) {
 		t.Error("a short window should render a scrollbar thumb")
 	}
 }
+
+// TestSettingsPreservesUnownedFields checks that saving Settings keeps the parts
+// of the account it does not edit — the remote name and the source folders,
+// which are managed on the Account and Backup source screens. Rebuilding the
+// config from the form alone would silently wipe them.
+func TestSettingsPreservesUnownedFields(t *testing.T) {
+	cfg := config.Config{
+		RemoteName:          "drive:",
+		SourceFolders:       []string{"/srv/alpha", "/srv/beta"},
+		RemoteDestination:   "Backups",
+		RemoteRetentionDays: 15,
+	}
+	s := newSettingsModel(cfg)
+
+	got := s.toConfig()
+	if got.RemoteName != "drive:" {
+		t.Errorf("RemoteName = %q, want drive:", got.RemoteName)
+	}
+	if len(got.SourceFolders) != 2 ||
+		got.SourceFolders[0] != "/srv/alpha" || got.SourceFolders[1] != "/srv/beta" {
+		t.Errorf("SourceFolders = %v, want them carried through untouched", got.SourceFolders)
+	}
+	// The fields the form does own still round-trip.
+	if got.RemoteDestination != "Backups" || got.RemoteRetentionDays != 15 {
+		t.Errorf("edited fields lost: %+v", got)
+	}
+}
+
+// TestClipPathKeepsTail checks that a path too long for its column is cut from
+// the left. Sibling folders under a long shared prefix differ only in their
+// tail, so clipping the tail (as plain clip does) would render them identical.
+func TestClipPathKeepsTail(t *testing.T) {
+	a := "/home/user/very/long/shared/prefix/alpha"
+	b := "/home/user/very/long/shared/prefix/beta"
+	if got := clipPath(a, 12); got == clipPath(b, 12) {
+		t.Fatalf("sibling paths must stay distinguishable, both rendered %q", got)
+	}
+	if got := clipPath(a, 12); !strings.HasSuffix(got, "alpha") {
+		t.Errorf("clipPath = %q, want it to keep the tail", got)
+	}
+	if got := clipPath(a, 12); len([]rune(got)) != 12 {
+		t.Errorf("clipPath = %q (%d runes), want 12", got, len([]rune(got)))
+	}
+	// A path that already fits is untouched.
+	if got := clipPath("/srv/a", 20); got != "/srv/a" {
+		t.Errorf("short path was altered: %q", got)
+	}
+}

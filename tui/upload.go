@@ -150,7 +150,7 @@ func (u uploadModel) View() string {
 		var b strings.Builder
 		b.WriteString(titleStyle.Render("Back Up Now"))
 		b.WriteString("\n\n")
-		b.WriteString(subtitleStyle.Render("Copies each project sub-folder to the cloud (one-way upload)."))
+		b.WriteString(subtitleStyle.Render("Uploads each configured source folder to the cloud (one-way copy)."))
 		b.WriteString("\n\n")
 		b.WriteString(subtitleStyle.Render(fmt.Sprintf("Source: %d folder(s)", len(u.cfg.SourceFolders))))
 		b.WriteString("\n")
@@ -158,7 +158,7 @@ func (u uploadModel) View() string {
 		b.WriteString("\n")
 		b.WriteString(lastBackupLine(u.cfg))
 		b.WriteString("\n\n")
-		b.WriteString(subtitleStyle.Render("Destination folder (blank = account root):"))
+		b.WriteString(subtitleStyle.Render("Destination folder for this run only (blank = account root):"))
 		b.WriteString("\n")
 		b.WriteString(u.destInput.View())
 		b.WriteString("\n\n")
@@ -179,7 +179,7 @@ func (u uploadModel) View() string {
 func (u uploadModel) footerHint() string {
 	switch u.state {
 	case upIdle:
-		return "edit destination • enter start • esc back"
+		return "type to edit destination • enter start • esc back"
 	case upRunning:
 		return "backing up… • q quit"
 	default:

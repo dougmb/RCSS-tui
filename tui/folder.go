@@ -5,8 +5,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Folder screen: a directory-only file picker used to choose SourceRoot. It
-// replaces editing BACKUP_ROOT by hand in backup.env.
+// Folder picker: a directory-only file picker used by the Backup source screen
+// to add a folder to the account's source list. It replaces editing BACKUP_ROOT
+// by hand in backup.env.
 
 // folderChosenMsg tells the root model the user picked a directory.
 type folderChosenMsg struct{ path string }
@@ -61,7 +62,7 @@ func (f folderModel) Update(msg tea.Msg) (folderModel, tea.Cmd) {
 // View renders the current directory header and the picker body. The root
 // frames it and adds the footer.
 func (f folderModel) View() string {
-	header := titleStyle.Render("Select sync folder") + "\n" +
+	header := titleStyle.Render("Add a backup source folder") + "\n" +
 		subtitleStyle.Render(f.fp.CurrentDirectory) + "\n\n"
 	return header + f.fp.View()
 }

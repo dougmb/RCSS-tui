@@ -18,10 +18,14 @@ type aboutModel struct {
 	cfg           config.Config
 	rcloneMissing bool
 	accountCount  int
+	remoteMissing bool // the active account's rclone remote no longer exists
 }
 
-func newAboutModel(cfg config.Config, rcloneMissing bool, accountCount int) aboutModel {
-	return aboutModel{cfg: cfg, rcloneMissing: rcloneMissing, accountCount: accountCount}
+func newAboutModel(cfg config.Config, rcloneMissing bool, accountCount int, remoteMissing bool) aboutModel {
+	return aboutModel{
+		cfg: cfg, rcloneMissing: rcloneMissing,
+		accountCount: accountCount, remoteMissing: remoteMissing,
+	}
 }
 
 func (a aboutModel) Update(msg tea.Msg) (aboutModel, tea.Cmd) {
@@ -51,6 +55,9 @@ func (a aboutModel) View() string {
 		active = "—"
 	}
 	b.WriteString(infoLine("Active account", active))
+	if a.remoteMissing {
+		b.WriteString("  " + warnStyle.Render("⚠ no longer an rclone remote"))
+	}
 	b.WriteString("\n")
 	b.WriteString(infoLine("Accounts", fmt.Sprintf("%d", a.accountCount)))
 	b.WriteString("\n")
