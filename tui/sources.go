@@ -171,7 +171,7 @@ func (s sourcesModel) View() string {
 		b.WriteString(subtitleStyle.Render("No folders yet — press a to add one."))
 	} else {
 		for i, f := range s.folders {
-			line := clip(f, w-2)
+			line := clipPath(f, w-2)
 			if i == s.cursor {
 				b.WriteString(titleStyle.Render("› " + line))
 			} else {
@@ -201,7 +201,7 @@ func (s sourcesModel) doneView() string {
 	} else {
 		for _, f := range s.folders {
 			b.WriteString("  • ")
-			b.WriteString(clip(f, s.width-6))
+			b.WriteString(clipPath(f, s.width-6))
 			b.WriteString("\n")
 		}
 	}

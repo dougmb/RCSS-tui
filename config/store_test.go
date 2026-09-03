@@ -91,7 +91,7 @@ func TestMigrateSourceRoots(t *testing.T) {
 	s := Store{Accounts: []Config{
 		{RemoteName: "drive:", SourceRoot: "/legacy"},                          // migrates
 		{RemoteName: "keep:", SourceFolders: []string{"/a"}, SourceRoot: "/b"}, // SourceFolders wins, root cleared
-		{RemoteName: "none:"},                                                  // unchanged
+		{RemoteName: "none:"}, // unchanged
 	}}
 	if !s.migrateSourceRoots() {
 		t.Fatal("expected migration to report a change")

@@ -1,5 +1,7 @@
 # RCSS-tui — Rclone Cloud Simple Scripts
 
+This app still in development and not released.
+
 A small, polished **terminal UI** (and headless CLI) for managing per-project
 backups on any cloud remote supported by [`rclone`](https://rclone.org) —
 typically Google Drive. RCSS uploads each project folder, prunes old backups
@@ -7,6 +9,7 @@ locally and in the cloud, restores files, and can schedule itself through your
 operating system's scheduler (crontab on Linux/macOS, Task Scheduler on
 Windows). It runs on Linux, macOS, and Windows, and supports multiple fully
 isolated accounts (one per rclone remote).
+
 
 It is a **pure Go** application built on [Bubbletea](https://github.com/charmbracelet/bubbletea):
 a single self-contained binary that drives the `rclone` binary directly. There
@@ -62,13 +65,13 @@ sudo -v ; curl https://rclone.org/install.sh | sudo bash
 
 Or use your package manager:
 
-| Platform | Command |
-| --- | --- |
-| Arch Linux | `sudo pacman -S rclone` |
-| Debian / Ubuntu | `sudo apt install rclone` |
-| Fedora | `sudo dnf install rclone` |
-| openSUSE | `sudo zypper install rclone` |
-| macOS (Homebrew) | `brew install rclone` |
+| Platform         | Command                          |
+| ---------------- | -------------------------------- |
+| Arch Linux       | `sudo pacman -S rclone`        |
+| Debian / Ubuntu  | `sudo apt install rclone`      |
+| Fedora           | `sudo dnf install rclone`      |
+| openSUSE         | `sudo zypper install rclone`   |
+| macOS (Homebrew) | `brew install rclone`          |
 | Windows (winget) | `winget install Rclone.Rclone` |
 
 On Windows you can instead use `scoop install rclone`, `choco install rclone`, or
@@ -159,11 +162,14 @@ A first run, end to end:
    begin the one-way upload. Progress streams live and it finishes with
    `✓ Backup … in <duration>`. (Edits here apply to this run only.)
 6. **Schedule** — a single editor (pre-filled with whatever is already
-   scheduled) where the **Upload** and **Clean** jobs are each toggled on/off and
-   set to **Daily** or **Weekly on a chosen weekday** at a time: `↑/↓` move
-   between fields, `←/→` change a value, `space` toggles a job, type digits for
-   the time, `enter` saves with inline confirmation. RCSS installs the matching
-   crontab / Task Scheduler jobs for this account — no root/admin needed.
+   scheduled) with **one block per target**: **All folders**, then **one block
+   per source folder** so each can run on its own cadence, then **Clean**. Each
+   block is toggled on/off and set to **Daily** or **Weekly on a chosen weekday**
+   at a time: `↑/↓` move between fields, `←/→` change a value, `space` toggles a
+   job, type digits for the time, `enter` saves with inline confirmation. RCSS
+   installs the matching crontab / Task Scheduler jobs for this account — no
+   root/admin needed. A job left behind by a folder you removed is shown as
+   **orphaned** and cleared on the next save.
 7. **Restore** — pick a project (📁) → pick a file (or a loose file 📄) → confirm
    the **local destination** (pre-filled from Settings, editable) → `enter`
    restores it with progress.
@@ -182,17 +188,17 @@ rcss
 
 Opens the full UI. From the main menu:
 
-| Screen | What it does |
-| --- | --- |
-| **Rclone Account** | Manage accounts (one per rclone remote): switch the active one, add via `rclone config`, or forget one |
-| **Backup source** | Choose the local root folder whose sub-folders are your projects |
-| **Restore** | Browse remote projects → files and restore one, with live progress |
-| **Back Up Now** | Copy all projects to the cloud now (one-way upload), streaming rclone progress |
-| **Clean** | Remove old **cloud** backups: explains the criteria, previews with a dry-run, then deletes; optional Force (double-confirmed) bypasses the safety lock |
-| **Settings** | One scrollable page; toggles expand (▾) to reveal their sub-settings and the focused item's help shows in a status bar; saved to `config.toml` with a visible confirmation |
-| **Schedule** | Toggle and time the Upload / Clean jobs (daily, or weekly on a chosen weekday) in one editor, pre-filled with the current schedule; installs them into your OS scheduler (crontab / Task Scheduler) |
-| **Logs** | Scroll the sync log with ERROR/WARN highlighting |
-| **About** | Version, rclone/scheduler status, and config/log locations |
+| Screen                   | What it does                                                                                                                                                                                        |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rclone Account** | Manage accounts (one per rclone remote): switch the active one, add via`rclone config`, or forget one                                                                                             |
+| **Backup source**  | Manage the list of local folders to back up; each is uploaded as its own backup                                                                                                                     |
+| **Restore**        | Browse remote projects → files and restore one, with live progress                                                                                                                                 |
+| **Back Up Now**    | Upload your source folders to the cloud now (one-way copy), streaming rclone progress                                                                                                               |
+| **Clean**          | Remove old**cloud** backups: explains the criteria, previews with a dry-run, then deletes; optional Force (double-confirmed) bypasses the safety lock                                         |
+| **Settings**       | One scrollable page; toggles expand (▾) to reveal their sub-settings and the focused item's help shows in a status bar; saved to`config.toml` with a visible confirmation                        |
+| **Schedule**       | Toggle and time a job per source folder (plus an all-folders upload and Clean), daily or weekly, in one editor pre-filled with the current schedule; installs them into your OS scheduler            |
+| **Logs**           | Scroll the sync log with ERROR/WARN highlighting                                                                                                                                                    |
+| **About**          | Version, rclone/scheduler status, and config/log locations                                                                                                                                          |
 
 The UI requires a terminal of at least **80×14**; anything smaller renders a
 single centered notice (`Not enough space to render panels`).
@@ -224,13 +230,20 @@ The same backup engine runs without the UI — this is exactly what the Schedule
 screen registers with your OS scheduler (per account):
 
 ```bash
-rcss upload [-v] [-p] [--account NAME]            # back up an account's projects
+rcss upload [-v] [-p] [--folder DIR] [--account NAME]      # back up an account's folders
 rcss clean  [-v] [--dry-run] [--force] [--account NAME]   # remove old cloud backups
 rcss help
 ```
 
 `--account NAME` is the rclone remote (e.g. `drive:`); it defaults to the active
 account.
+
+`--folder DIR` limits an upload to one source folder and may be repeated; with
+none, every folder configured for the account is uploaded. This is what makes
+per-folder schedules possible — each scheduled block installs the same command
+with its own `--folder`. A folder that is not configured for the account is an
+error, so a job left behind by a removed folder fails loudly in the log instead
+of quietly backing up nothing.
 
 ## Configuration
 
@@ -243,19 +256,19 @@ is migrated automatically on first load.
 
 Each account entry has these fields:
 
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `remote_name` | — | rclone remote, e.g. `drive:` (the account key) |
-| `source_root` | — | local folder whose sub-folders are projects |
-| `remote_destination` | `` (blank) | destination folder on the remote; **blank = the account root** |
-| `restore_destination` | `` (blank) | local folder restores are written to; **blank = the backup source** |
-| `delete_after_upload` | `false` | enable local cleanup after a successful upload; **off keeps all local files** |
-| `retention_days` | `0` | when `delete_after_upload` is on, keep local files this many days (**0 = delete all**); ignored when off |
-| `remote_retention_days` | `15` | delete **cloud** files older than this on clean |
-| `remote_cleanup_safety_days` | `2` | clean is blocked unless a backup newer than this exists |
-| `skip_formats` | `` (blank) | file patterns excluded from uploads; a token like `tmp` means `*.tmp`, while `.*`, `*.log`, or `node_modules/**` are used verbatim (so `.*` skips dotfiles) |
-| `ignored_folders` | `scripts config bin logs lost+found` | sub-folders never treated as projects |
-| `log_file` | (config dir)/`backup-<account>.log` | append-only run log (per account) |
+| Field                          | Default                                | Meaning                                                                                                                                                                |
+| ------------------------------ | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `remote_name`                | —                                     | rclone remote, e.g.`drive:` (the account key)                                                                                                                        |
+| `source_root`                | —                                     | local folder whose sub-folders are projects                                                                                                                            |
+| `remote_destination`         | `` (blank)                             | destination folder on the remote;**blank = the account root**                                                                                                    |
+| `restore_destination`        | `` (blank)                             | local folder restores are written to;**blank = the backup source**                                                                                               |
+| `delete_after_upload`        | `false`                              | enable local cleanup after a successful upload;**off keeps all local files**                                                                                     |
+| `retention_days`             | `0`                                  | when`delete_after_upload` is on, keep local files this many days (**0 = delete all**); ignored when off                                                        |
+| `remote_retention_days`      | `15`                                 | delete**cloud** files older than this on clean                                                                                                                   |
+| `remote_cleanup_safety_days` | `2`                                  | clean is blocked unless a backup newer than this exists                                                                                                                |
+| `skip_formats`               | `` (blank)                             | file patterns excluded from uploads; a token like`tmp` means `*.tmp`, while `.*`, `*.log`, or `node_modules/**` are used verbatim (so `.*` skips dotfiles) |
+| `ignored_folders`            | `scripts config bin logs lost+found` | sub-folders never treated as projects                                                                                                                                  |
+| `log_file`                   | (config dir)/`backup-<account>.log`  | append-only run log (per account)                                                                                                                                      |
 
 ## Safety guarantees
 

@@ -13,7 +13,7 @@ type keyMap struct {
 	Open    key.Binding
 	Back    key.Binding
 	Filter  key.Binding
-	Jump    key.Binding // 1–8 quick-jump to a screen (documented; matched separately)
+	Jump    key.Binding // 1–9 quick-jump to a screen (documented; matched separately)
 	Refresh key.Binding
 	Help    key.Binding
 	Quit    key.Binding

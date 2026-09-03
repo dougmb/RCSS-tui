@@ -24,7 +24,7 @@ CI (`.github/workflows/ci.yml`) runs `go build ./...`, `go vet ./...`, `go test 
 ## Entrypoints
 
 - `rcss` (no args) → launches the TUI.
-- `rcss upload [-v] [-p] [--account NAME]` → headless upload.
+- `rcss upload [-v] [-p] [--folder DIR] [--account NAME]` → headless upload; `--folder` is repeatable and limits the run to those source folders.
 - `rcss clean [-v] [--dry-run] [--force] [--account NAME]` → headless clean.
 - `--account` is the rclone remote name (e.g. `drive:`); defaults to the active account.
 
@@ -63,7 +63,7 @@ Keep retention concepts separate:
 2. **Clean has a safety lock**: it confirms a backup newer than `RemoteCleanupSafetyDays` exists (`rclone lsf --max-age`) and aborts with `ErrNoRecentBackup` otherwise. `--force` bypasses it and is dangerous.
 3. **Clean previews with dry-run before real deletion** in the UI, and deletes only cloud files. Local pruning is done by Back Up Now.
 4. **Restore logs to the terminal only** (`NewLogger("")`); it must not append to the backup log.
-5. **Scheduling owns only RCSS-managed entries**, per account. On Unix, rewrite only the `# >>> RCSS-managed >>>` … `# <<< RCSS-managed <<<` block. On Windows, tasks are named `RCSS-<account>-Upload` / `RCSS-<account>-Clean`.
+5. **Scheduling owns only RCSS-managed entries**, per account. On Unix, rewrite only the `# >>> RCSS-managed >>>` … `# <<< RCSS-managed <<<` block. On Windows, an account's tasks are enumerated by the `RCSS-<account>-` prefix; per-folder uploads add a `-<base>-<hash>` suffix. Jobs may carry a `Folder` (`--folder`) limiting them to one source folder.
 
 ## TUI conventions
 

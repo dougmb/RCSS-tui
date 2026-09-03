@@ -17,12 +17,19 @@ import (
 type UploadOptions struct {
 	// ShowProgress adds rclone's -P progress output to the streamed lines.
 	ShowProgress bool
+	// Folders restricts the run to these source folders, matched against
+	// cfg.SourceFolders by cleaned path. Empty (the default) uploads every
+	// configured folder. A folder that is not configured is an error, so a
+	// scheduled job left behind by a removed folder fails loudly instead of
+	// silently backing up nothing.
+	Folders []string
 }
 
 // UploadResult summarizes a completed Upload run, matching the SYNC SUMMARY
 // block written to the log.
 type UploadResult struct {
 	Status       string // "SUCCESS" or "PARTIAL"
+	Scope        string // "all folders", or the folder this run was limited to
 	Duration     time.Duration
 	UploadErrors int
 	FilesDeleted int
@@ -43,14 +50,21 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 		return res, err
 	}
 
+	folders, err := selectFolders(cfg, opts.Folders)
+	if err != nil {
+		log.Errorf("%v", err)
+		return res, err
+	}
+	res.Scope = scopeLabel(opts.Folders)
+
 	overallStart := time.Now()
 	log.Infof("Starting backup synchronization...")
-	log.Infof("Settings: folders=%d | remote=%s | delete_after_upload=%t | retention=%dd | skip_formats=%s",
-		len(cfg.SourceFolders), cfg.RemoteName, cfg.DeleteAfterUpload, cfg.RetentionDays, strings.Join(cfg.SkipFormats, " "))
-	warnDuplicateNames(cfg.SourceFolders, log)
+	log.Infof("Settings: scope=%s | folders=%d | remote=%s | delete_after_upload=%t | retention=%dd | skip_formats=%s",
+		res.Scope, len(folders), cfg.RemoteName, cfg.DeleteAfterUpload, cfg.RetentionDays, strings.Join(cfg.SkipFormats, " "))
+	warnDuplicateNames(folders, log)
 
 	excludes := uploadExcludes(cfg)
-	for _, folder := range cfg.SourceFolders {
+	for _, folder := range folders {
 		if ctx.Err() != nil {
 			return res, ctx.Err()
 		}
@@ -109,6 +123,45 @@ func Upload(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Logg
 		return res, fmt.Errorf("%d folder(s) failed to upload", res.UploadErrors)
 	}
 	return res, nil
+}
+
+// selectFolders resolves the folders an Upload run should cover: every
+// configured source when want is empty, otherwise exactly the wanted ones. Each
+// wanted folder must be configured for the account — an unknown one is an error
+// naming it, which is what turns an orphaned scheduled job into a clear log
+// entry rather than a silent no-op.
+func selectFolders(cfg config.Config, want []string) ([]string, error) {
+	if len(want) == 0 {
+		return cfg.SourceFolders, nil
+	}
+	configured := make(map[string]string, len(cfg.SourceFolders))
+	for _, f := range cfg.SourceFolders {
+		configured[filepath.Clean(f)] = f
+	}
+	out := make([]string, 0, len(want))
+	for _, w := range want {
+		f, ok := configured[filepath.Clean(w)]
+		if !ok {
+			return nil, fmt.Errorf("folder %q is not a configured source for account %q", w, cfg.RemoteName)
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// scopeLabel renders the run's scope for the log and the SYNC SUMMARY block.
+func scopeLabel(want []string) string {
+	switch len(want) {
+	case 0:
+		return "all folders"
+	case 1:
+		return filepath.Base(want[0])
+	}
+	names := make([]string, 0, len(want))
+	for _, w := range want {
+		names = append(names, filepath.Base(w))
+	}
+	return strings.Join(names, ", ")
 }
 
 // warnDuplicateNames logs a warning when two source folders share a basename,
@@ -223,6 +276,7 @@ func summaryBlock(cfg config.Config, res UploadResult) []string {
 		fmt.Sprintf("  SYNC SUMMARY — %s", time.Now().Format("2006-01-02 15:04:05")),
 		"════════════════════════════════════════════════",
 		fmt.Sprintf("  Status            : %s", res.Status),
+		fmt.Sprintf("  Scope             : %s", res.Scope),
 		fmt.Sprintf("  Duration          : %ds", secs),
 		fmt.Sprintf("  Cloud Destination : %s/", remoteDest(cfg)),
 		fmt.Sprintf("  Projects w/ Errors: %d", res.UploadErrors),

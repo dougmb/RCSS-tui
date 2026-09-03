@@ -3,11 +3,13 @@ package tui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/dougmb/rcss-tui/config"
 	"github.com/dougmb/rcss-tui/scheduler"
@@ -15,11 +17,14 @@ import (
 
 // Schedule screen: a single interactive window that registers RCSS jobs with the
 // host OS scheduler (crontab on Unix, Task Scheduler on Windows; no root/admin),
-// calling the rcss binary headless — `rcss upload` and/or `rcss clean`. Each job
-// is Daily or Weekly (on a chosen weekday) at a time. The editor opens
-// pre-filled with whatever is currently scheduled, saves inline, and shows
-// success/failure feedback without leaving the screen. Disabling both jobs and
-// saving removes the managed jobs.
+// calling the rcss binary headless — `rcss upload` and/or `rcss clean`.
+//
+// There is one block per schedulable target: an "All folders" upload, one upload
+// per configured source folder (so each folder can run on its own cadence), and
+// the account's Clean job. Each block is Daily or Weekly (on a chosen weekday)
+// at a time. The editor opens pre-filled with whatever is currently scheduled,
+// saves inline, and shows success/failure feedback without leaving the screen.
+// Disabling every block and saving removes the account's managed jobs.
 
 // fieldKind identifies an editable field within a job block (or the Save action).
 type fieldKind int
@@ -39,9 +44,17 @@ type focusTarget struct {
 	field fieldKind
 }
 
-// jobForm is the editable state of one schedulable job (Upload or Clean).
+// jobForm is the editable state of one schedulable target.
 type jobForm struct {
-	kind    scheduler.Kind
+	kind   scheduler.Kind
+	folder string // upload target; "" means every configured folder
+	label  string // block heading, e.g. "All folders" or "alpha"
+	path   string // full source path shown under the heading (empty for others)
+	// orphan marks a job found in the OS scheduler whose folder is no longer a
+	// configured source. Orphans are shown so the user can see them, are not
+	// focusable, and are dropped when the schedule is saved.
+	orphan bool
+
 	enabled bool
 	weekly  bool
 	weekday time.Weekday
@@ -49,56 +62,144 @@ type jobForm struct {
 	min     int
 }
 
+// job renders the form as the scheduler job it would register.
+func (j jobForm) job() scheduler.Job {
+	return scheduler.Job{
+		Kind: j.kind, Hour: j.hour, Min: j.min,
+		Weekly: j.weekly, Weekday: j.weekday, Folder: j.folder,
+	}
+}
+
 type scheduleModel struct {
 	cfg config.Config
 
-	jobs    [2]jobForm // index 0 = Upload, 1 = Clean
-	focus   int        // index into fields()
-	editBuf string     // in-progress digit entry for the focused Time field
+	jobs    []jobForm // "All folders", one per source folder, orphans, then Clean
+	focus   int       // index into fields()
+	editBuf string    // in-progress digit entry for the focused Time field
 
 	current []scheduler.Job // what is actually scheduled (for the summary)
 
-	// done flips to true once saved; saveErr is set by apply().
+	// daemonWarning is set when the OS scheduler's daemon is not running, so
+	// saving a job would succeed and then silently never run.
+	daemonWarning string
+
+	// done flips to true once saved; saveErr is set by apply(). removed records
+	// how many orphaned jobs the save dropped, for the confirmation screen.
 	done    bool
 	saveErr error
+	removed int
 
 	width, height int
 }
 
 func newScheduleModel(cfg config.Config) scheduleModel {
 	current, _ := scheduler.Current(cfg.RemoteName)
-	s := scheduleModel{
-		cfg:     cfg,
-		current: current,
-		jobs: [2]jobForm{
-			{kind: scheduler.Upload, weekly: false, weekday: time.Sunday, hour: 3, min: 0},
-			{kind: scheduler.Clean, weekly: true, weekday: time.Sunday, hour: 5, min: 0},
-		},
+	warning := ""
+	if state, hint := scheduler.Daemon(); state == scheduler.DaemonStopped {
+		warning = hint
 	}
-	// Pre-fill the editor from the active schedule so it reflects reality.
+	return scheduleModel{
+		cfg:           cfg,
+		current:       current,
+		jobs:          mergeScheduled(defaultJobForms(cfg), current),
+		daemonWarning: warning,
+	}
+}
+
+// mergeScheduled pre-fills the editor blocks from what is actually scheduled, so
+// the screen opens reflecting reality. A scheduled job whose folder is no longer
+// a configured source has no block: it becomes an orphan block, inserted before
+// Clean, so the user can see what is still running behind their back instead of
+// it vanishing silently.
+func mergeScheduled(forms []jobForm, current []scheduler.Job) []jobForm {
 	for _, j := range current {
-		idx := 0
-		if j.Kind == scheduler.Clean {
-			idx = 1
+		if i := indexOfTarget(forms, j); i >= 0 {
+			forms[i] = fillForm(forms[i], j)
+			continue
 		}
-		jf := jobForm{kind: j.Kind, enabled: true, weekly: j.Weekly, weekday: j.Weekday, hour: j.Hour, min: j.Min}
-		if j.Hour < 0 || j.Min < 0 { // a backend that couldn't recover the time
-			jf.hour, jf.min = s.jobs[idx].hour, s.jobs[idx].min
-		}
-		s.jobs[idx] = jf
+		forms = insertBeforeClean(forms, fillForm(jobForm{
+			kind:   j.Kind,
+			folder: j.Folder,
+			label:  j.Label(),
+			path:   j.Folder,
+			orphan: true,
+		}, j))
 	}
-	return s
+	return forms
+}
+
+// defaultJobForms builds the editable blocks for an account: the all-folders
+// upload, one upload per configured source folder, then Clean. Per-folder
+// defaults are staggered half an hour apart so enabling several at once doesn't
+// queue them all against the remote at the same minute.
+func defaultJobForms(cfg config.Config) []jobForm {
+	forms := []jobForm{{
+		kind: scheduler.Upload, label: "All folders",
+		path: fmt.Sprintf("every folder configured for %s", cfg.RemoteName),
+		hour: 3, min: 0,
+	}}
+	for i, f := range cfg.SourceFolders {
+		start := 2*60 + i*30
+		forms = append(forms, jobForm{
+			kind: scheduler.Upload, folder: f, label: filepath.Base(f), path: f,
+			hour: (start / 60) % 24, min: start % 60,
+		})
+	}
+	return append(forms, jobForm{
+		kind: scheduler.Clean, label: "Clean",
+		path:    "removes cloud backups past the retention window (this account)",
+		weekly:  true,
+		weekday: time.Sunday, hour: 5, min: 0,
+	})
+}
+
+// fillForm copies a scheduled job's cadence and time into its editor block and
+// marks it enabled. A backend that could not recover the time keeps the block's
+// default rather than showing a nonsense clock.
+func fillForm(f jobForm, j scheduler.Job) jobForm {
+	f.enabled = true
+	f.weekly, f.weekday = j.Weekly, j.Weekday
+	if j.Hour >= 0 && j.Min >= 0 {
+		f.hour, f.min = j.Hour, j.Min
+	}
+	return f
+}
+
+// indexOfTarget returns the block addressing the same scheduler entry as j, or
+// -1 when none does (an orphaned job).
+func indexOfTarget(forms []jobForm, j scheduler.Job) int {
+	for i, f := range forms {
+		if !f.orphan && f.job().SameTarget(j) {
+			return i
+		}
+	}
+	return -1
+}
+
+// insertBeforeClean places a block just above the trailing Clean block, keeping
+// the upload blocks grouped together.
+func insertBeforeClean(forms []jobForm, f jobForm) []jobForm {
+	for i, existing := range forms {
+		if existing.kind == scheduler.Clean {
+			return append(forms[:i:i], append([]jobForm{f}, forms[i:]...)...)
+		}
+	}
+	return append(forms, f)
 }
 
 func (s scheduleModel) Init() tea.Cmd { return nil }
 
 func (s *scheduleModel) setSize(w, h int) { s.width, s.height = w, h }
 
-// fields returns the ordered focus targets for the current state. The Weekday
-// field only appears for weekly jobs, so navigation and rendering stay in sync.
+// fields returns the ordered focus targets for the current state. Orphan blocks
+// are informational and never focusable; the Weekday field only appears for
+// weekly jobs, so navigation and rendering stay in sync.
 func (s scheduleModel) fields() []focusTarget {
 	var ft []focusTarget
 	for i := range s.jobs {
+		if s.jobs[i].orphan {
+			continue
+		}
 		ft = append(ft, focusTarget{i, fEnabled}, focusTarget{i, fCadence})
 		if s.jobs[i].weekly {
 			ft = append(ft, focusTarget{i, fWeekday})
@@ -250,23 +351,32 @@ func parseTimeBuf(buf string) (hour, min int, ok bool) {
 	return h, m, true
 }
 
-// buildJobs collects the enabled jobs as scheduler.Jobs for Apply.
+// buildJobs collects the enabled blocks as scheduler.Jobs for Apply. Orphans are
+// left out, which is what removes them from the OS scheduler on save.
 func (s scheduleModel) buildJobs() []scheduler.Job {
 	var jobs []scheduler.Job
 	for _, jf := range s.jobs {
-		if !jf.enabled {
+		if !jf.enabled || jf.orphan {
 			continue
 		}
-		jobs = append(jobs, scheduler.Job{
-			Kind: jf.kind, Hour: jf.hour, Min: jf.min,
-			Weekly: jf.weekly, Weekday: jf.weekday,
-		})
+		jobs = append(jobs, jf.job())
 	}
 	return jobs
 }
 
-func (s scheduleModel) anyEnabled() bool {
-	return s.jobs[0].enabled || s.jobs[1].enabled
+// anyEnabled reports whether saving would leave any job registered.
+func (s scheduleModel) anyEnabled() bool { return len(s.buildJobs()) > 0 }
+
+// orphanCount is how many scheduled jobs point at folders that are no longer
+// configured, so the view and the save confirmation can call them out.
+func (s scheduleModel) orphanCount() int {
+	n := 0
+	for _, jf := range s.jobs {
+		if jf.orphan {
+			n++
+		}
+	}
+	return n
 }
 
 // apply registers the enabled jobs with the OS scheduler.
@@ -286,6 +396,7 @@ func (s scheduleModel) apply() error {
 // state so the confirmation is shown before auto-returning to the menu.
 func (s *scheduleModel) save() tea.Cmd {
 	s.commitFocusedTime()
+	s.removed = s.orphanCount()
 	s.saveErr = s.apply()
 	if s.saveErr == nil {
 		s.current, _ = scheduler.Current(s.cfg.RemoteName)
@@ -299,27 +410,89 @@ func (s scheduleModel) View() string {
 		return s.doneView()
 	}
 
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Schedule — %s (%s)", s.cfg.RemoteName, scheduler.Backend())))
-	b.WriteString("\n")
-	b.WriteString(subtitleStyle.Render(s.currentScheduleText()))
-	b.WriteString("\n\n")
+	cw := s.width - 1
+	if cw < 10 {
+		cw = 10
+	}
+	height := s.height - 2 // title + blank line
+	if height < 1 {
+		height = 1
+	}
 
+	lines, focusStart, focusEnd := s.contentLines()
+
+	// Scroll just enough to keep the focused block visible.
+	offset := 0
+	if focusEnd > height {
+		offset = focusEnd - height
+	}
+	if focusStart < offset {
+		offset = focusStart
+	}
+	if maxOff := len(lines) - height; offset > maxOff {
+		offset = maxOff
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	bar := scrollColumn(height, len(lines), offset)
+	rows := make([]string, height)
+	for i := 0; i < height; i++ {
+		ln := ""
+		if offset+i < len(lines) {
+			ln = lines[offset+i]
+		}
+		rows[i] = padLineTo(ln, cw) + bar[i]
+	}
+
+	title := titleStyle.Render(fmt.Sprintf("Schedule — %s (%s)", s.cfg.RemoteName, scheduler.Backend()))
+	return title + "\n\n" + strings.Join(rows, "\n")
+}
+
+// contentLines renders the summary and every job block into a flat line slice,
+// reporting the line range [start,end) of the focused block so View can scroll.
+func (s scheduleModel) contentLines() (lines []string, focusStart, focusEnd int) {
+	lines = append(lines, strings.Split(s.currentScheduleText(), "\n")...)
+	// Registering a job with a stopped daemon looks like success and then never
+	// runs, so this has to be said before the user schedules anything.
+	if s.daemonWarning != "" {
+		lines = append(lines, wrapTo(warnStyle.Render("⚠ ")+s.daemonWarning, s.contentWidth())...)
+	}
+	// The orphan blocks sit further down and can fall below the fold, so the
+	// warning goes at the top where it is visible the moment the screen opens.
+	if n := s.orphanCount(); n > 0 {
+		msg := fmt.Sprintf("⚠ %d job(s) point at folders no longer configured; saving removes them.", n)
+		lines = append(lines, warnStyle.Render(clip(msg, s.contentWidth())))
+	}
+	lines = append(lines, "")
+
+	cur := s.fields()[s.focus]
 	for i := range s.jobs {
-		b.WriteString(s.renderJob(i))
-		b.WriteString("\n")
+		block := strings.Split(s.renderJob(i), "\n")
+		if cur.job == i {
+			focusStart = len(lines)
+		}
+		lines = append(lines, block...)
+		if cur.job == i {
+			focusEnd = len(lines)
+		}
 	}
-	b.WriteString("\n")
 
-	saveFocused := s.fields()[s.focus].field == fSave
-	save := "[ Save ]"
-	if saveFocused {
-		save = titleStyle.Render("‹ Save ›")
-	} else {
-		save = subtitleStyle.Render(save)
+	lines = append(lines, "")
+	onSave := cur.field == fSave
+	if onSave {
+		focusStart = len(lines)
 	}
-	b.WriteString(save)
-	return b.String()
+	save := subtitleStyle.Render("[ Save ]")
+	if onSave {
+		save = titleStyle.Render("‹ Save ›")
+	}
+	lines = append(lines, save)
+	if onSave {
+		focusEnd = len(lines)
+	}
+	return lines, focusStart, focusEnd
 }
 
 // doneView renders the save confirmation (success or error) before the screen
@@ -333,23 +506,46 @@ func (s scheduleModel) doneView() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("✓ Schedule saved"))
 	b.WriteString("\n\n")
-	if !s.anyEnabled() {
+	if len(s.current) == 0 {
 		b.WriteString(infoLine("Status", "RCSS jobs removed"))
 	} else {
 		b.WriteString(subtitleStyle.Render("Currently scheduled:"))
 		for _, j := range s.current {
-			fmt.Fprintf(&b, "\n  • %s — %s at %s", j.Kind.Title(), j.Cadence(), j.Time())
+			b.WriteString("\n" + jobSummaryLine(j))
 		}
+	}
+	if s.daemonWarning != "" {
+		b.WriteString("\n\n")
+		b.WriteString(warnStyle.Render("⚠ " + s.daemonWarning))
+	}
+	if s.removed > 0 {
+		b.WriteString("\n\n")
+		b.WriteString(warnStyle.Render(fmt.Sprintf("Removed %d job(s) for folders that are no longer configured.", s.removed)))
 	}
 	return b.String()
 }
 
 // renderJob renders one bordered job block with the focused field highlighted.
+// An orphan block is read-only: it reports a job scheduled for a folder that is
+// no longer configured, and says it will go away on save.
 func (s scheduleModel) renderJob(i int) string {
 	jf := s.jobs[i]
 	cur := s.fields()[s.focus]
-	active := cur.job == i
+	active := !jf.orphan && cur.job == i
 	focused := func(f fieldKind) bool { return active && cur.field == f }
+
+	width := s.contentWidth() - 4 // two border columns + two padding columns
+	if width < 10 {
+		width = 10
+	}
+	textW := width - 2 // the pane pads one column on each side
+
+	if jf.orphan {
+		body := warnStyle.Render("⚠ "+jf.label+" — folder no longer configured") + "\n" +
+			subtitleStyle.Render(clipPath(jf.path, textW)) + "\n" +
+			subtitleStyle.Render(fmt.Sprintf("Scheduled %s at %s — removed when you save.", jf.Cadence(), jf.timeText()))
+		return paneStyle(false).Width(width).Render(body)
+	}
 
 	check := "[ ]"
 	if jf.enabled {
@@ -369,18 +565,34 @@ func (s scheduleModel) renderJob(i int) string {
 	}
 	lines = append(lines, cadence)
 
-	timeStr := fmt.Sprintf("%02d:%02d", jf.hour, jf.min)
+	timeStr := jf.timeText()
 	if focused(fTime) && s.editBuf != "" {
 		timeStr = s.editBuf + "_"
 	}
 	lines = append(lines, "Time:    "+fieldValue(timeStr, focused(fTime)))
 
-	title := jf.kind.Title()
+	title := jf.label
 	if !jf.enabled {
 		title += " (off)"
 	}
-	return paneStyle(active).Render(titleStyle.Render(title) + "\n" + strings.Join(lines, "\n"))
+	head := titleStyle.Render(title)
+	if jf.path != "" {
+		// A per-folder block shows a real path (clip from the left, keeping the
+		// tail); the others show a sentence, which reads better clipped normally.
+		label := clip(jf.path, textW)
+		if jf.folder != "" {
+			label = clipPath(jf.path, textW)
+		}
+		head += "\n" + subtitleStyle.Render(label)
+	}
+	return paneStyle(active).Width(width).Render(head + "\n" + strings.Join(lines, "\n"))
 }
+
+// timeText renders the block's clock as HH:MM.
+func (j jobForm) timeText() string { return fmt.Sprintf("%02d:%02d", j.hour, j.min) }
+
+// Cadence renders the block's recurrence in words, matching scheduler.Job.
+func (j jobForm) Cadence() string { return j.job().Cadence() }
 
 // fieldValue renders a focusable value, bracketing and highlighting it when
 // focused so the selection is obvious; padding keeps the width steady otherwise.
@@ -409,7 +621,49 @@ func (s scheduleModel) currentScheduleText() string {
 	var b strings.Builder
 	b.WriteString("Currently scheduled:")
 	for _, j := range s.current {
-		fmt.Fprintf(&b, "\n  • %s — %s at %s", j.Kind.Title(), j.Cadence(), j.Time())
+		b.WriteString("\n" + jobSummaryLine(j))
 	}
 	return b.String()
+}
+
+// jobSummaryLine renders one scheduled job as a bullet. Uploads name the folder
+// they cover; Clean is per-account, so naming a folder there would be a lie.
+func jobSummaryLine(j scheduler.Job) string {
+	if j.Kind == scheduler.Clean {
+		return fmt.Sprintf("  • %s — %s at %s", j.Kind.Title(), j.Cadence(), j.Time())
+	}
+	return fmt.Sprintf("  • %s (%s) — %s at %s", j.Kind.Title(), j.Label(), j.Cadence(), j.Time())
+}
+
+// wrapTo breaks a message into lines of at most w display columns, so a long
+// warning stays inside the pane instead of running under the scrollbar.
+func wrapTo(msg string, w int) []string {
+	var (
+		out  []string
+		line string
+	)
+	for _, word := range strings.Fields(msg) {
+		switch {
+		case line == "":
+			line = word
+		case lipgloss.Width(line)+1+lipgloss.Width(word) <= w:
+			line += " " + word
+		default:
+			out = append(out, line)
+			line = word
+		}
+	}
+	if line != "" {
+		out = append(out, line)
+	}
+	return out
+}
+
+// contentWidth is the usable text width inside the screen, leaving the last
+// column to the scrollbar.
+func (s scheduleModel) contentWidth() int {
+	if w := s.width - 1; w > 10 {
+		return w
+	}
+	return 10
 }

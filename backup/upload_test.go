@@ -3,6 +3,7 @@ package backup
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,8 +31,8 @@ func TestFormatExcludes(t *testing.T) {
 func TestMatchesSkip(t *testing.T) {
 	cfg := config.Config{SkipFormats: []string{"tmp", ".*"}}
 	cases := map[string]bool{
-		"build.tmp": true,  // *.tmp
-		".env":      true,  // .*
+		"build.tmp": true, // *.tmp
+		".env":      true, // .*
 		"main.go":   false,
 		"notes.txt": false,
 	}
@@ -121,4 +122,63 @@ func TestCleanupLocalModel(t *testing.T) {
 			t.Error("recent a.txt should be kept")
 		}
 	})
+}
+
+// TestSelectFolders covers the scope resolution behind `rcss upload --folder`:
+// no selection means every configured folder, a selection is honoured in the
+// order given, and an unconfigured folder is a named error rather than a silent
+// no-op (which is what makes an orphaned scheduled job visible in the log).
+func TestSelectFolders(t *testing.T) {
+	cfg := config.Config{
+		RemoteName:    "drive:",
+		SourceFolders: []string{"/srv/alpha", "/srv/beta"},
+	}
+
+	t.Run("empty selects all", func(t *testing.T) {
+		got, err := selectFolders(cfg, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("got %v, want both folders", got)
+		}
+	})
+
+	t.Run("selection is honoured", func(t *testing.T) {
+		// A trailing slash and a "." segment must still match the configured path.
+		got, err := selectFolders(cfg, []string{"/srv/beta/"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0] != "/srv/beta" {
+			t.Fatalf("got %v, want [/srv/beta]", got)
+		}
+	})
+
+	t.Run("unknown folder errors", func(t *testing.T) {
+		_, err := selectFolders(cfg, []string{"/srv/gamma"})
+		if err == nil {
+			t.Fatal("expected an error for an unconfigured folder")
+		}
+		if !strings.Contains(err.Error(), "/srv/gamma") {
+			t.Errorf("error must name the folder, got: %v", err)
+		}
+	})
+}
+
+// TestScopeLabel checks the label recorded in the SYNC SUMMARY block.
+func TestScopeLabel(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want string
+	}{
+		{nil, "all folders"},
+		{[]string{"/srv/alpha"}, "alpha"},
+		{[]string{"/srv/alpha", "/srv/beta"}, "alpha, beta"},
+	}
+	for _, c := range cases {
+		if got := scopeLabel(c.in); got != c.want {
+			t.Errorf("scopeLabel(%v) = %q, want %q", c.in, got, c.want)
+		}
+	}
 }

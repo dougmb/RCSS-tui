@@ -1,7 +1,7 @@
 // Command rcss is the RCSS backup manager. Run without arguments it opens the
 // terminal UI; with a subcommand it runs headless (for cron):
 //
-//	rcss upload [-v] [-p]            upload all projects
+//	rcss upload [-v] [-p] [--folder DIR]     upload the configured folders
 //	rcss clean  [-v] [--dry-run] [--force]   clean old remote backups
 //
 // Both subcommands reuse the same backup package as the TUI.
@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/dougmb/rcss-tui/backup"
@@ -53,13 +54,15 @@ func usage(w *os.File) {
 
 Usage:
   rcss                 open the terminal UI
-  rcss upload [-v] [-p] [--account NAME]
+  rcss upload [-v] [-p] [--folder DIR] [--account NAME]
   rcss clean  [-v] [--dry-run] [--force] [--account NAME]
   rcss help
 
 Flags:
   -v             verbose output
   -p             show rclone transfer progress (upload)
+  --folder DIR   back up only this source folder; repeat for several
+                 (default: every folder configured for the account)
   --dry-run      preview deletions without removing anything (clean)
   --force        bypass the safety lock (clean) — dangerous
   --account NAME run for this account (rclone remote); defaults to the active one
@@ -112,11 +115,19 @@ func pickAccount(store *config.Store, name string) (config.Config, bool) {
 	return store.Active()
 }
 
+// stringList collects a flag that may be repeated, e.g. `--folder a --folder b`.
+type stringList []string
+
+func (s *stringList) String() string     { return strings.Join(*s, ", ") }
+func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
+
 func runUpload(argv []string) int {
 	fs := flag.NewFlagSet("upload", flag.ExitOnError)
 	verbose := fs.Bool("v", false, "verbose output")
 	progress := fs.Bool("p", false, "show rclone transfer progress")
 	account := fs.String("account", "", "account (rclone remote) to run; defaults to active")
+	var folders stringList
+	fs.Var(&folders, "folder", "back up only this source folder (repeatable); default: all")
 	_ = fs.Parse(argv)
 
 	cfg, rc, log, err := setup(*verbose, *account)
@@ -129,7 +140,10 @@ func runUpload(argv []string) int {
 	ctx, cancel := newContext()
 	defer cancel()
 
-	if _, err := backup.Upload(ctx, cfg, rc, log, backup.UploadOptions{ShowProgress: *progress}); err != nil {
+	if _, err := backup.Upload(ctx, cfg, rc, log, backup.UploadOptions{
+		ShowProgress: *progress,
+		Folders:      folders,
+	}); err != nil {
 		return 1
 	}
 	return 0

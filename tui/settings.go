@@ -37,8 +37,10 @@ const (
 	setChildPad = 2  // extra indent for a sub-setting row
 
 	// saveConfirmationTimeout is how long a save-confirmation screen stays
-	// visible before automatically returning to the menu.
-	saveConfirmationTimeout = 0 * time.Second
+	// visible before automatically returning to the menu. It must be long enough
+	// to actually read: at zero the tick fires immediately and the "Saved ✓"
+	// screen is gone before it is drawn. Any key returns sooner.
+	saveConfirmationTimeout = 1500 * time.Millisecond
 )
 
 // defaultSkipFormats pre-fills the "Skip file formats" box with common junk
@@ -56,10 +58,14 @@ type setField struct {
 }
 
 type settingsModel struct {
-	remoteName    string   // chosen on the Account screen, not editable here
-	sourceFolders []string // managed on the Backup source screen, carried through
-	fields        []setField
-	focus         int // index into visibleIndices(); == len means the Save action
+	// base is the account being edited. toConfig starts from it and overwrites
+	// only the fields this form owns, so settings managed on other screens (the
+	// remote name, the source folders) — and any field added to Config later —
+	// survive a save instead of being silently reset.
+	base       config.Config
+	remoteName string // chosen on the Account screen, not editable here
+	fields     []setField
+	focus      int // index into visibleIndices(); == len means the Save action
 
 	status string // inline validation feedback (errors only)
 	failed bool
@@ -116,7 +122,7 @@ func newSettingsModel(cfg config.Config) settingsModel {
 			parent: "skipfmt", help: "Space-separated: 'tmp' means *.tmp; '.*' skips dotfiles.",
 			placeholder: defaultSkipFormats, input: mkInput(strings.Join(cfg.SkipFormats, " "), defaultSkipFormats)},
 		{key: "ignored", label: "Ignored folders", section: "Files", kind: fText,
-			help:        "Space-separated folder names never treated as projects.",
+			help:        "Space-separated folder names excluded from inside every backup (e.g. node_modules).",
 			placeholder: "(none)", input: mkInput(strings.Join(cfg.IgnoredFolders, " "), "(none)")},
 
 		{key: "log", label: "Log file", section: "Log", kind: fText,
@@ -124,7 +130,7 @@ func newSettingsModel(cfg config.Config) settingsModel {
 			placeholder: "(default)", input: mkInput(cfg.LogFile, "(default)")},
 	}
 
-	s := settingsModel{remoteName: cfg.RemoteName, sourceFolders: cfg.SourceFolders, fields: fields}
+	s := settingsModel{base: cfg, remoteName: cfg.RemoteName, fields: fields}
 	s.fields[0].input.Focus() // start editing the first field
 	return s
 }
@@ -208,19 +214,17 @@ func (s settingsModel) toConfig() config.Config {
 		skip = strings.Fields(val("formats"))
 	}
 
-	return config.Config{
-		RemoteName:              s.remoteName,
-		SourceFolders:           s.sourceFolders,
-		RemoteDestination:       val("dest"),
-		RestoreDestination:      val("restore"),
-		DeleteAfterUpload:       onOff("delaft"),
-		RetentionDays:           atoi(val("ret")),
-		RemoteRetentionDays:     atoi(val("rret")),
-		RemoteCleanupSafetyDays: atoi(val("safety")),
-		SkipFormats:             skip,
-		IgnoredFolders:          strings.Fields(val("ignored")),
-		LogFile:                 val("log"),
-	}
+	cfg := s.base
+	cfg.RemoteDestination = val("dest")
+	cfg.RestoreDestination = val("restore")
+	cfg.DeleteAfterUpload = onOff("delaft")
+	cfg.RetentionDays = atoi(val("ret"))
+	cfg.RemoteRetentionDays = atoi(val("rret"))
+	cfg.RemoteCleanupSafetyDays = atoi(val("safety"))
+	cfg.SkipFormats = skip
+	cfg.IgnoredFolders = strings.Fields(val("ignored"))
+	cfg.LogFile = val("log")
+	return cfg
 }
 
 func (s settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
@@ -591,6 +595,24 @@ func padLineTo(s string, w int) string {
 		return s + strings.Repeat(" ", w-d)
 	}
 	return s
+}
+
+// clipPath truncates a filesystem path to at most w runes from the LEFT, so the
+// tail — the part that actually tells two paths apart — stays visible:
+// "/very/long/prefix/alpha" becomes "…/prefix/alpha". Plain clip would cut the
+// tail off and render sibling paths identical.
+func clipPath(s string, w int) string {
+	if w < 1 {
+		w = 1
+	}
+	r := []rune(s)
+	if len(r) <= w {
+		return s
+	}
+	if w == 1 {
+		return "…"
+	}
+	return "…" + string(r[len(r)-(w-1):])
 }
 
 // clip truncates a plain string to at most w runes, adding an ellipsis when cut.

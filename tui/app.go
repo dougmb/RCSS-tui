@@ -6,6 +6,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -93,6 +94,13 @@ type Model struct {
 	showHelp      bool
 	rcloneMissing bool
 
+	// knownRemotes is the rclone remote list, read once at startup so screens can
+	// tell when an account outlived its remote. remotesKnown records whether that
+	// read succeeded — without it a failed listing would make every account look
+	// stale.
+	knownRemotes map[string]bool
+	remotesKnown bool
+
 	menu     list.Model
 	account  accountModel
 	sources  sourcesModel
@@ -114,7 +122,8 @@ type Model struct {
 func New(store *config.Store, rc *rclone.Client) Model {
 	cfg, _ := store.Active()
 	rcMissing := rc.EnsureInstalled() != nil
-	return Model{
+	known, remotesKnown := listKnownRemotes(rc, rcMissing)
+	m := Model{
 		store:         store,
 		cfg:           cfg,
 		rc:            rc,
@@ -122,6 +131,8 @@ func New(store *config.Store, rc *rclone.Client) Model {
 		screen:        screenAccount,
 		help:          help.New(),
 		rcloneMissing: rcMissing,
+		knownRemotes:  known,
+		remotesKnown:  remotesKnown,
 		menu:          newMenu(),
 		account:       newAccountModel(rc, cfg.RemoteName, store.Names()),
 		backups:       newBackupsModel(cfg, rc),
@@ -130,8 +141,40 @@ func New(store *config.Store, rc *rclone.Client) Model {
 		settings:      newSettingsModel(cfg),
 		schedule:      newScheduleModel(cfg),
 		logs:          newLogsModel(cfg),
-		about:         newAboutModel(cfg, rcMissing, len(store.Accounts)),
 	}
+	m.about = m.newAbout()
+	return m
+}
+
+// listKnownRemotes reads the configured rclone remotes once at startup. This is
+// a local config read, not a network call, so it is cheap enough to do eagerly —
+// and having it up front is what lets every screen flag an account whose remote
+// has since been renamed or deleted.
+func listKnownRemotes(rc *rclone.Client, rcMissing bool) (map[string]bool, bool) {
+	set := map[string]bool{}
+	if rcMissing {
+		return set, false
+	}
+	remotes, err := rc.ListRemotes(context.Background())
+	if err != nil {
+		return set, false
+	}
+	for _, r := range remotes {
+		set[r] = true
+	}
+	return set, true
+}
+
+// activeRemoteMissing reports whether the active account names an rclone remote
+// that no longer exists. It stays false while the remote list is unknown, so an
+// unreadable rclone config never cries wolf.
+func (m Model) activeRemoteMissing() bool {
+	return m.remotesKnown && m.cfg.RemoteName != "" && !m.knownRemotes[m.cfg.RemoteName]
+}
+
+// newAbout builds the About sub-model from the current root state.
+func (m Model) newAbout() aboutModel {
+	return newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts), m.activeRemoteMissing())
 }
 
 // folderStart is the directory the add-folder picker opens at: the parent of the
@@ -210,7 +253,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.store.Upsert(m.cfg)
 		m.saveErr = m.store.Save()
 		m.settings.saveErr = m.saveErr
-		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
+		m.about = m.newAbout()
 		return m, nil
 
 	case remoteChosenMsg:
@@ -223,7 +266,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cfg, _ = m.store.Active()
 		m.saveErr = m.store.Save()
 		m.account.saveErr = m.saveErr
-		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
+		m.about = m.newAbout()
 		return m, nil
 
 	case accountForgetMsg:
@@ -234,7 +277,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.account.saveErr = m.saveErr
 		m.account.current = m.cfg.RemoteName
 		delete(m.account.configured, msg.name)
-		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
+		m.about = m.newAbout()
 		return m, m.account.load()
 
 	case sourcesSavedMsg:
@@ -402,7 +445,7 @@ func (m Model) enterScreen(s screen) (tea.Model, tea.Cmd) {
 		m.logs.reload()
 		return m, nil
 	case screenAbout:
-		m.about = newAboutModel(m.cfg, m.rcloneMissing, len(m.store.Accounts))
+		m.about = m.newAbout()
 		return m, nil
 	}
 	return m, nil
@@ -596,6 +639,10 @@ func (m Model) previewView() string {
 	case screenAccount:
 		body += "\n\n" + infoLine("Active account", m.cfg.RemoteName) +
 			"\n" + infoLine("Accounts configured", fmt.Sprintf("%d", len(m.store.Accounts)))
+		if m.activeRemoteMissing() {
+			body += "\n\n" + warnStyle.Render("⚠ "+m.cfg.RemoteName+" is no longer an rclone remote.") +
+				"\n" + warnStyle.Render("  Open this screen to switch or forget the account.")
+		}
 	case screenFolder:
 		body += "\n\n" + infoLine("Backup folders", fmt.Sprintf("%d configured", len(m.cfg.SourceFolders)))
 	case screenUpload, screenClean, screenBackups:

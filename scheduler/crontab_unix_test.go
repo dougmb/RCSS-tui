@@ -15,12 +15,14 @@ import (
 // helpers only, so the real crontab is never touched.
 func TestFormatParseRoundTrip(t *testing.T) {
 	cases := []Job{
-		{Kind: Upload, Hour: 3, Min: 0},                                       // daily upload
+		{Kind: Upload, Hour: 3, Min: 0},                                        // daily upload, all folders
 		{Kind: Clean, Hour: 7, Min: 30, Weekly: true, Weekday: time.Wednesday}, // weekly clean, Wed
 		{Kind: Upload, Hour: 23, Min: 59, Weekly: true, Weekday: time.Sunday},  // weekly upload, Sun
+		{Kind: Upload, Hour: 2, Min: 5, Folder: "/srv/alpha"},                  // one folder
+		{Kind: Upload, Hour: 4, Min: 45, Folder: "/home/u/My Documents"},       // folder with a space
 	}
 	for _, want := range cases {
-		line := formatJobLine("drive:", want, "/usr/bin/rcss", "/tmp/backup.log")
+		line := formatJobLine("drive:", want, "/opt/my apps/rcss", "/var/log/my logs/backup.log")
 		got, ok := parseManagedLine(line)
 		if !ok {
 			t.Fatalf("parseManagedLine failed for line: %s", line)
@@ -113,4 +115,50 @@ func jobsEqual(a, b []Job) bool {
 		}
 	}
 	return true
+}
+
+// TestApplyPerFolderJobs checks that several per-folder upload jobs for one
+// account round-trip together, and that rewriting one account leaves another
+// account's per-folder jobs untouched (the isolation invariant).
+func TestApplyPerFolderJobs(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "crontab")
+	if err := os.WriteFile(bin, []byte(fakeCrontab), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CRONTAB_STORE", filepath.Join(dir, "store"))
+
+	exe, log := "/usr/bin/rcss", "/tmp/backup.log"
+	drive := []Job{
+		{Kind: Upload, Hour: 2, Min: 0, Folder: "/srv/alpha"},
+		{Kind: Upload, Hour: 2, Min: 30, Folder: "/srv/my beta"},
+		{Kind: Upload, Hour: 3, Min: 0}, // all folders
+		{Kind: Clean, Hour: 5, Min: 0, Weekly: true, Weekday: time.Sunday},
+	}
+	work := []Job{{Kind: Upload, Hour: 1, Min: 15, Folder: "/data/work"}}
+
+	if err := apply("drive:", drive, exe, log); err != nil {
+		t.Fatal(err)
+	}
+	if err := apply("work:", work, exe, log); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := current("drive:"); !jobsEqual(got, drive) {
+		t.Fatalf("drive per-folder round-trip: got %+v want %+v", got, drive)
+	}
+	if got, _ := current("work:"); !jobsEqual(got, work) {
+		t.Fatalf("work per-folder round-trip: got %+v want %+v", got, work)
+	}
+
+	// Dropping one folder from drive: must not disturb work:.
+	if err := apply("drive:", drive[:1], exe, log); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := current("drive:"); !jobsEqual(got, drive[:1]) {
+		t.Errorf("drive not narrowed to one job: %+v", got)
+	}
+	if got, _ := current("work:"); !jobsEqual(got, work) {
+		t.Errorf("work: disturbed by a drive: rewrite: %+v", got)
+	}
 }

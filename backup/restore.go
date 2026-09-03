@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -123,27 +124,59 @@ func Restore(ctx context.Context, cfg config.Config, rc *rclone.Client, log *Log
 }
 
 // RestoreTarget returns the default local folder where a remote item at relPath
-// should be restored. The configured RestoreDestination is the base; when empty
-// the current working directory is used. The returned path is the parent folder
-// into which the item will be copied, preserving the remote's relative
-// structure (e.g. "website/index.html" → "<base>/website").
+// should be restored.
+//
+// An explicit RestoreDestination is always the base, and the item keeps the
+// remote's relative structure under it (e.g. "website/index.html" →
+// "<base>/website"). With no RestoreDestination configured, a backup restores to
+// the source folder it came from: the first segment of relPath names a remote
+// backup folder, and when a configured source folder shares that base name the
+// item goes back where it originated. Only when nothing matches — a restore from
+// the destination root, or a remote folder with no local counterpart — does it
+// fall back to the current working directory.
 func RestoreTarget(cfg config.Config, relPath string) (string, error) {
-	base := cfg.RestoreDestination
-	if base == "" {
-		var err error
-		base, err = os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("getting current directory: %w", err)
+	if base := cfg.RestoreDestination; base != "" {
+		return underBase(base, relPath), nil
+	}
+	if src, rest, ok := matchSourceFolder(cfg, relPath); ok {
+		return underBase(src, rest), nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting current directory: %w", err)
+	}
+	return underBase(cwd, relPath), nil
+}
+
+// underBase returns the parent folder the item at relPath lands in when
+// restored beneath base, preserving the remote's intermediate directories.
+func underBase(base, relPath string) string {
+	if relPath == "" {
+		return base
+	}
+	dir := path.Dir(relPath)
+	if dir == "." || dir == "/" {
+		return base
+	}
+	return joinRemoteLocal(base, filepath.FromSlash(dir))
+}
+
+// matchSourceFolder maps a remote path back to the source folder it was uploaded
+// from. Upload stores each folder at <dest>/<folder-basename>, so the first
+// segment of relPath is that basename; rest is the path within it. Returns
+// ok=false when relPath names no folder or no configured source matches.
+func matchSourceFolder(cfg config.Config, relPath string) (src, rest string, ok bool) {
+	relPath = strings.Trim(relPath, "/")
+	if relPath == "" {
+		return "", "", false
+	}
+	top, rest, _ := strings.Cut(relPath, "/")
+	for _, f := range cfg.SourceFolders {
+		if filepath.Base(f) == top {
+			return f, rest, true
 		}
 	}
-	if relPath == "" {
-		return base, nil
-	}
-	dir := filepath.Dir(relPath)
-	if dir == "." || dir == "/" {
-		return base, nil
-	}
-	return joinRemoteLocal(base, dir), nil
+	return "", "", false
 }
 
 // joinRemoteLocal joins a local base path with a relative sub-path, keeping it
